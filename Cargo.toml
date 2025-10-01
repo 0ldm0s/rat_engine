@@ -1,0 +1,170 @@
+[package]
+name = "rat_engine"
+version = "1.0.5"
+edition = "2024"
+authors = ["0ldm0s <oldmos@gmail.com>"]
+description = "高性能Rust HTTP服务器引擎，提供Flask风格的API和自动硬件优化功能"
+readme = "README.md"
+keywords = ["http", "server", "web", "async", "performance"]
+categories = ["web-programming::http-server", "asynchronous"]
+build = "build.rs"
+repository = "https://github.com/0ldm0s/rat_engine"
+homepage = "https://github.com/0ldm0s/rat_engine"
+documentation = "https://docs.rs/rat_engine/latest/rat_engine/"
+license = "LGPL-3.0"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+hyper = { version = "1.0", features = ["server", "http1", "http2", "client"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "server", "http1", "http2", "tokio"] }
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+sys-info = "0.9"
+rat_logger = "0.2.8"
+rat_congestion = "0.1.0"
+http-body-util = "0.1.3"
+# Memory optimization
+mimalloc = { version = "0.1", default-features = false }
+# CPU affinity
+core_affinity = "0.8"
+# High-performance channels and work-stealing
+crossbeam = "0.8"
+crossbeam-queue = "0.3"
+# 无锁哈希表
+dashmap = "5.5"
+# CPU core detection
+num_cpus = "1.16"
+# Python bindings (optional)
+pyo3 = { version = "0.21.0", optional = true }
+bincode = "2.0"
+# URL encoding/decoding
+urlencoding = "2.1"
+# URL parsing
+url = "2.4"
+# Bytes handling
+bytes = "1.5"
+# Error handling
+thiserror = "1.0"
+# Regular expressions
+regex = "1.10"
+# Base64 encoding for large file transmission
+base64 = "0.21"
+# Lazy static initialization
+lazy_static = "1.4"
+# Hex encoding for debugging
+hex = "0.4"
+# Async trait support
+async-trait = "0.1.74"
+sha2 = "0.10"
+httpdate = "1.0"
+tempfile = { version = "3.8", optional = true }
+# Streaming support
+tokio-stream = "0.1"
+futures-util = "0.3"
+# Home directory detection
+dirs = "5.0"
+sysinfo = "0.29.10"
+
+# 压缩支持（基础：gzip + lz4）
+flate2 = { version = "1.0", optional = true }
+lz4_flex = { version = "0.11", optional = true }
+# 压缩支持（完整：brotli + zstd）
+brotli = { version = "3.4.0", optional = true }
+zstd = { version = "0.12", optional = true }
+# 缓存支持
+rat_memcache = { version = "0.2.3", optional = true }
+jsonwebtoken = "9.3.1"
+# 协议检测支持
+psi_detector = "0.1.3"
+# HTTP/2 和 gRPC 支持
+h2 = "0.4"
+# TLS 支持（默认启用，支持HTTP/2和gRPC）
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = { version = "2.1" }
+webpki-roots = { version = "0.26" }
+tokio-rustls = { version = "0.26" }
+# 证书处理和生成（开发环境自签名证书）
+rcgen = { version = "0.12", features = ["x509-parser"] }
+x509-parser = { version = "0.16" }
+# ACME 证书自动签发（可选）
+acme_commander = { version = "0.1.2", optional = true }
+# 异步流处理
+pin-project-lite = "0.2"
+async-stream = "0.3"
+# UUID 生成
+uuid = { version = "1.6", features = ["v4"] }
+# 随机数生成
+rand = "0.8"
+# 独立HTTP客户端支持
+reqwest = { version = "0.11", optional = true, features = ["json", "stream", "gzip", "brotli", "deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+# System calls for socket optimization
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winsock2"] }
+
+[build-dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = ["tls"]  # 默认包含TLS，支持gRPC的HTTP/2
+# Python bindings
+python = ["pyo3", "full"]
+
+# 客户端功能
+client = ["http-client", "grpc-client", "reqwest"]  # HTTP和gRPC客户端（组合特性）
+http-client = []  # 仅HTTP客户端
+grpc-client = []  # 仅gRPC客户端
+
+# 缓存功能
+cache = ["rat_memcache"]               # 仅L1缓存
+cache-full = ["cache", "rat_memcache/melange-storage"]  # 包含L1和L2缓存
+
+# 压缩功能
+compression = ["flate2", "lz4_flex"]   # 基础压缩（gzip + lz4）
+compression-full = ["compression", "brotli", "zstd"]  # 完整压缩
+compression-br = ["compression", "brotli"]  # + Brotli
+compression-zstd = ["compression", "zstd"]  # + Zstd
+
+# 证书和TLS功能
+tls = []  # TLS支持（默认启用）
+acme = ["acme_commander"]  # ACME自动证书
+
+# 开发功能
+dev = []  # 开发环境（已包含在默认特性中）
+
+# 完整功能
+full = ["client", "cache-full", "compression-full", "acme"]  # 包含所有可选特性
+
+# 独立HTTP客户端功能
+reqwest-client = ["reqwest"]  # 基于reqwest的独立HTTP客户端
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+temp-env = "0.3"
+tempfile = "3.8"
+reqwest = { version = "0.11", features = ["json", "stream"] }
+futures-util = "0.3"
+async-stream = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.test]
+opt-level = 1

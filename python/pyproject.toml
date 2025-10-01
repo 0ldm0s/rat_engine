@@ -1,0 +1,40 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rat-engine-py"
+dynamic = ["version"]
+description = "Python bindings for RAT Engine - 高性能HTTP服务器引擎，提供Flask风格的API和自动硬件优化功能"
+authors = [
+    {name = "0ldm0s", email = "oldmos@gmail.com"},
+]
+requires-python = ">=3.11"
+keywords = ["http", "server", "web", "async", "performance", "flask", "grpc", "rust", "high-performance"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+        "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/0ldm0s/rat_engine"
+Repository = "https://github.com/0ldm0s/rat_engine"
+Documentation = "https://docs.rs/rat_engine/latest/rat_engine/"
+"Bug Tracker" = "https://github.com/0ldm0s/rat_engine/issues"
+
+[tool.maturin]
+module-name = "rat_engine._rat_engine"
+python-source = "."
+version-from-cargo = true
+features = ["pyo3/extension-module"]

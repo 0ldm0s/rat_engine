@@ -1,0 +1,17 @@
+# RAT Engine Python Dependencies
+# 运行时依赖 - 保持最小化以确保高性能
+
+# 核心依赖（如果需要的话）
+# 注意：RAT Engine 的设计目标是零依赖或最小依赖
+
+# 类型提示支持（Python < 3.9）
+typing-extensions>=4.0.0; python_version<"3.9"
+
+# 可选：JSON 处理优化（如果需要更快的 JSON 处理）
+# orjson>=3.8.0  # 可选，比标准库 json 快很多
+
+# 可选：更快的 HTTP 日期处理
+# email-validator>=1.3.0  # 如果需要邮箱验证
+
+# 开发和测试依赖在 setup.py 的 extras_require 中定义
+# 安装方式：pip install rat-engine[dev]
