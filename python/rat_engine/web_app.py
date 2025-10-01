@@ -1,0 +1,1903 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+RAT Engine Web 应用 Python 实现
+
+将所有 Web 应用功能（装饰器、路由、CLI 等）完全移到 Python 层，
+Rust 层专注于高性能通信和底层优化。
+
+特性：
+- 完整的 Web 应用装饰器 (@app.html, @app.json, @app.sse, @app.chunk, @app.file, @app.custom 等)
+- 路径参数支持 (/user/<id>, /user/<int:id> 等)
+- 请求上下文管理
+- 中间件支持
+- 错误处理
+- CLI 工具
+- 性能监控
+"""
+
+import re
+import json
+import inspect
+import functools
+from typing import Dict, List, Callable, Any, Optional, Union, Tuple
+from urllib.parse import unquote
+import threading
+import signal
+from contextlib import contextmanager
+from enum import Enum
+from .grpc_decorators import add_grpc_decorators_to_app
+from .cache_config import build_cache_config
+
+class ResponseType(Enum):
+    """响应类型枚举"""
+    HTML = "html"
+    JSON = "json"
+    TEXT = "text"
+    SSE = "sse"
+    FILE = "file"
+    CUSTOM = "custom"
+    CUSTOM_BYTES = "custom_bytes"
+    SSE_JSON = "sse_json"
+    SSE_TEXT = "sse_text"
+    CHUNK = "chunk"
+    REDIRECT = "redirect"
+
+class TypedResponse:
+    """带类型标识的响应对象"""
+    def __init__(self, content: Any, response_type: ResponseType, **kwargs):
+        self.content = content
+        self.response_type = response_type
+        self.kwargs = kwargs
+
+from ._rat_engine import Router as PyRouter, Server as PyServer, ServerConfig
+from ._rat_engine import CompressionConfig, CompressionType
+from ._rat_engine import PyGrpcMainThread
+
+# 直接从 _rat_engine 导入 HTTP 类，不使用回退实现
+from ._rat_engine import HttpRequest, HttpResponse, HttpMethod
+# 成功从 Rust 导入 HttpRequest, HttpResponse 和 HttpMethod
+
+
+# 全局请求上下文
+_request_context = threading.local()
+
+
+class RequestContext:
+    """请求上下文管理器"""
+    
+    def __init__(self, request: HttpRequest):
+        self.request = request
+        self.path_params = {}
+    
+    def __enter__(self):
+        _request_context.current = self
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(_request_context, 'current'):
+            delattr(_request_context, 'current')
+
+
+def get_current_request() -> Optional[HttpRequest]:
+    """获取当前请求对象"""
+    context = getattr(_request_context, 'current', None)
+    return context.request if context else None
+
+
+def get_path_params() -> Dict[str, Any]:
+    """获取当前请求的路径参数"""
+    context = getattr(_request_context, 'current', None)
+    return context.path_params if context else {}
+
+
+class Route:
+    """路由定义"""
+    
+    def __init__(self, pattern: str, handler: Callable, methods: List[str]):
+        self.pattern = pattern
+        self.handler = handler
+        self.methods = [m.upper() for m in methods]
+        self.regex, self.param_names = self._compile_pattern(pattern)
+    
+    def _compile_pattern(self, pattern: str) -> Tuple[re.Pattern, List[str]]:
+        """编译路径模式为正则表达式"""
+        param_names = []
+        
+        # 处理路径参数 <name> 和 <type:name>
+        def replace_param(match):
+            param_def = match.group(1)
+            if ':' in param_def:
+                param_type, param_name = param_def.split(':', 1)
+                param_names.append((param_name, param_type))
+                
+                # 根据类型生成正则表达式
+                if param_type == 'int':
+                    return r'(\d+)'
+                elif param_type == 'float':
+                    return r'([\d.]+)'
+                elif param_type == 'path':
+                    return r'(.+)'
+                else:
+                    return r'([^/]+)'
+            else:
+                param_names.append((param_def, 'string'))
+                return r'([^/]+)'
+        
+        # 转义特殊字符并替换参数
+        escaped = re.escape(pattern)
+        escaped = escaped.replace(r'\<', '<').replace(r'\>', '>')
+        regex_pattern = re.sub(r'<([^>]+)>', replace_param, escaped)
+        
+        # 确保完全匹配
+        regex_pattern = f'^{regex_pattern}$'
+        
+        return re.compile(regex_pattern), param_names
+    
+    def match(self, path: str, method: str) -> Optional[Dict[str, Any]]:
+        """匹配路径和方法"""
+        if method.upper() not in self.methods:
+            return None
+        
+        match = self.regex.match(path)
+        if not match:
+            return None
+        
+        # 提取路径参数
+        params = {}
+        for i, (name, param_type) in enumerate(self.param_names):
+            value = match.group(i + 1)
+            
+            # 类型转换
+            if param_type == 'int':
+                params[name] = int(value)
+            elif param_type == 'float':
+                params[name] = float(value)
+            else:
+                params[name] = unquote(value)
+        
+        return params
+
+
+class Middleware:
+    """中间件基类"""
+    
+    def before_request(self, request: HttpRequest) -> Optional[HttpResponse]:
+        """请求前处理，返回 Response 则中断后续处理"""
+        return None
+    
+    def after_request(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
+        """请求后处理，可以修改响应"""
+        return response
+    
+    def on_error(self, request: HttpRequest, error: Exception) -> Optional[HttpResponse]:
+        """错误处理，返回 Response 则使用该响应"""
+        return None
+
+
+class RatApp:
+    """RAT Engine Web 应用类"""
+    
+    def __init__(self, name: str = "rat_app", **engine_kwargs):
+        self.name = name
+        self.routes: List[Route] = []
+        self.middlewares: List[Middleware] = []
+        self.error_handlers: Dict[int, Callable] = {}
+        self.before_request_handlers: List[Callable] = []
+        self.after_request_handlers: List[Callable] = []
+        self._stop_event = None
+        
+        # 扩展系统
+        self.extensions: Dict[str, Any] = {}  # 已注册的扩展
+        self._startup_handlers: List[Callable] = []  # 启动时回调
+        self._shutdown_handlers: List[Callable] = []  # 关闭时回调
+        
+        # 🔥 使用新的 RatEngineBuilder 作为后端（暂时注释掉，等API稳定后再启用）
+        # self._engine_builder = RatEngineBuilder()
+        # self._engine = None
+        
+        # 从 kwargs 中配置引擎参数（暂时保留原有逻辑）
+        # TODO: 迁移到新的 RatEngineBuilder
+        
+        # Celery 配置空间
+        self.celery_config: Dict[str, Any] = {
+            'broker_url': None,
+            'result_backend': None,
+            'task_serializer': 'json',
+            'result_serializer': 'json',
+            'accept_content': ['json'],
+            'timezone': 'UTC',
+            'enable_utc': True,
+            'task_routes': {},
+            'beat_schedule': {},
+            'worker_prefetch_multiplier': 1,
+            'task_acks_late': True,
+            'worker_disable_rate_limits': False,
+            'task_reject_on_worker_lost': True,
+        }
+        self._celery_app = None  # Celery 应用实例
+        
+        # 装饰器强制模式配置（始终启用）
+        self._strict_decorator_mode = True
+        self._decorator_call_stack = set()  # 跟踪装饰器调用栈
+        
+        # 当前请求对象
+        self.current_request: Optional[HttpRequest] = None
+        
+        # 创建底层 Rust 组件（用于兼容现有代码）
+        self.config = ServerConfig()  # 使用默认配置
+        self._router = PyRouter()  # 使用无参数的构造函数
+        self.server = PyServer(self.config)
+        
+        # 创建 gRPC 主线程管理器
+        self.main_thread = PyGrpcMainThread()
+        
+        # gRPC 相关状态跟踪
+        self._grpc_routes_registered = False  # 是否有 gRPC 路由注册
+        self._grpc_bridge_initialized = False  # gRPC 队列桥接是否已初始化
+        
+        # HTTP 队列桥接相关状态跟踪
+        self._http_routes_registered = False  # 是否有 HTTP 路由注册
+        self._http_bridge_initialized = False  # HTTP 队列桥接是否已初始化
+        
+        # 延迟到 run 时注册全局处理函数
+        self._global_handler_registered = False
+        self._logging_middleware = None
+        
+        # 添加 gRPC 装饰器方法到应用实例
+        add_grpc_decorators_to_app(self)
+    
+    def add_extension(self, extension, name: str = None):
+        """添加扩展到应用
+        
+        Args:
+            extension: 扩展实例，应该有 init_app 方法
+            name: 扩展名称，如果不提供则使用扩展类名
+        """
+        if name is None:
+            name = extension.__class__.__name__
+        
+        # 检查扩展是否已注册
+        if name in self.extensions:
+            raise ValueError(f"Extension '{name}' is already registered")
+        
+        # 注册扩展
+        self.extensions[name] = extension
+        
+        # 如果扩展有 init_app 方法，调用它
+        if hasattr(extension, 'init_app'):
+            extension.init_app(self)
+        
+        return extension
+    
+    def get_extension(self, name: str):
+        """获取已注册的扩展
+        
+        Args:
+            name: 扩展名称
+            
+        Returns:
+            扩展实例，如果不存在则返回 None
+        """
+        return self.extensions.get(name)
+    
+    def configure_celery(self, **config):
+        """配置 Celery 设置
+        
+        Args:
+            **config: Celery 配置参数
+        """
+        self.celery_config.update(config)
+    
+    def get_celery_app(self):
+        """获取或创建 Celery 应用实例
+        
+        Returns:
+            Celery 应用实例
+        """
+        if self._celery_app is None:
+            try:
+                from celery import Celery
+                
+                # 创建 Celery 应用
+                self._celery_app = Celery(self.name)
+                
+                # 应用配置
+                self._celery_app.config_from_object(self.celery_config)
+                
+            except ImportError:
+                raise ImportError("Celery is not installed. Install it with: pip install celery")
+        
+        return self._celery_app
+    
+    def on_startup(self, func: Callable):
+        """注册启动时回调函数
+        
+        Args:
+            func: 回调函数
+        """
+        self._startup_handlers.append(func)
+        return func
+    
+    def on_shutdown(self, func: Callable):
+        """注册关闭时回调函数
+        
+        Args:
+            func: 回调函数
+        """
+        self._shutdown_handlers.append(func)
+        return func
+    
+    def _call_startup_handlers(self):
+        """调用所有启动回调函数"""
+        for handler in self._startup_handlers:
+            try:
+                handler()
+            except Exception as e:
+                print(f"⚠️ 启动回调函数执行失败: {e}")
+    
+    def _call_shutdown_handlers(self):
+        """调用所有关闭回调函数"""
+        for handler in self._shutdown_handlers:
+            try:
+                handler()
+            except Exception as e:
+                print(f"⚠️ 关闭回调函数执行失败: {e}")
+    
+    def _setup_graceful_shutdown(self):
+        """设置优雅退出机制"""
+        import threading
+        
+        self._stop_event = threading.Event()
+        
+        def signal_handler(signum, frame):
+            print(f"\n🛑 收到信号 {signum}，正在优雅关闭服务器...")
+            self._stop_event.set()
+        
+        # 只在主线程中注册信号处理器
+        try:
+            if threading.current_thread() is threading.main_thread():
+                signal.signal(signal.SIGINT, signal_handler)
+                signal.signal(signal.SIGTERM, signal_handler)
+            else:
+                # 在子线程中，只创建停止事件，不设置信号处理器
+                print("⚠️ 在子线程中运行，跳过信号处理器设置")
+        except ValueError as e:
+            # 如果信号处理器设置失败，只记录警告
+            print(f"⚠️ 无法设置信号处理器: {e}")
+            print("💡 提示：在子线程中运行时，请手动调用 app.stop() 来停止服务器")
+    
+
+    
+    # 新增：基于响应类型的装饰器
+    def html(self, rule: str, methods: Optional[List[str]] = None, **options):
+        """HTML 响应装饰器 - 返回值将被视为 HTML 内容"""
+        if methods is None:
+            methods = ['GET']
+        
+        def decorator(func):
+            @functools.wraps(func)
+            def html_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 如果已经是HttpResponse或TypedResponse，直接返回
+                if isinstance(result, (HttpResponse, TypedResponse)):
+                    return result
+                # 处理 tuple 返回值格式
+                if isinstance(result, tuple):
+                    if len(result) == 2:
+                        content, second = result
+                        # 检查第二个元素是否为整数（状态码）
+                        if isinstance(second, int):
+                            # (content, status_code) 格式
+                            return TypedResponse(str(content), ResponseType.HTML, status_code=second)
+                        else:
+                            # (content, content_type) 格式 - 向后兼容
+                            return TypedResponse(str(content), ResponseType.CUSTOM, content_type=second)
+                    elif len(result) == 3:
+                        # (content, status_code, headers) 格式
+                        content, status_code, headers = result
+                        return TypedResponse(str(content), ResponseType.HTML, status_code=status_code, headers=headers)
+                # 返回TypedResponse对象，指定为HTML类型
+                return TypedResponse(str(result), ResponseType.HTML)
+            
+            self._add_route(rule, html_wrapper, methods, _from_decorator=True)
+            return html_wrapper
+        
+        return decorator
+    
+    def json(self, rule: str, methods: Optional[List[str]] = None, **options):
+        """JSON 响应装饰器 - 返回值将被序列化为 JSON"""
+        if methods is None:
+            methods = ['GET', 'POST']
+        
+        def decorator(func):
+            @functools.wraps(func)
+            def json_wrapper(*args, **kwargs):
+                # 处理从Rust传递的元组参数
+                if args:
+                    request_data = args[0]
+                    # 如果是元组且只有一个元素，解包
+                    if isinstance(request_data, tuple) and len(request_data) == 1:
+                        request_data = request_data[0]
+                else:
+                    request_data = kwargs.get('request_data')
+                
+                # 移除kwargs中可能重复的request_data参数
+                kwargs.pop('request_data', None)
+                
+                # 检查原始函数的签名，只传递它接受的参数
+                import inspect
+                sig = inspect.signature(func)
+                filtered_kwargs = {}
+                for param_name in sig.parameters:
+                    if param_name in kwargs:
+                        filtered_kwargs[param_name] = kwargs[param_name]
+                
+                result = func(request_data, **filtered_kwargs)
+                # 如果已经是HttpResponse或TypedResponse，直接返回
+                if isinstance(result, (HttpResponse, TypedResponse)):
+                    return result
+                # 否则直接返回字典（Rust端会处理为JSON）
+                return result
+            
+            self._add_route(rule, json_wrapper, methods, _from_decorator=True)
+            return json_wrapper
+        
+        return decorator
+    
+    def sse(self, rule: str, **options):
+        """SSE 响应装饰器 - 自动注册为流式路由"""
+        def decorator(func):
+            @functools.wraps(func)
+            def sse_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 处理 generator 对象 - 直接返回生成器，让 Rust 端处理
+                if hasattr(result, '__iter__') and not isinstance(result, (str, bytes)) and not hasattr(result, 'get_sender'):
+                    # 直接返回生成器，不再转换为 TypedResponse
+                    return result
+                # 如果返回字符串，标记为 SSE 响应
+                elif isinstance(result, str):
+                    return TypedResponse(result, ResponseType.SSE)
+                # 如果返回 SSE 通道对象，直接返回（Rust 层会处理）
+                elif hasattr(result, 'get_sender') and hasattr(result, 'take_response'):
+                    # 管理 SSE 连接
+                    if not hasattr(self, '_sse_channels'):
+                        self._sse_channels = {}
+                    
+                    import time
+                    connection_id = f"sse_{int(time.time())}_{id(result)}"
+                    self._sse_channels[connection_id] = result
+                    
+                    sender = result.get_sender()
+                    
+                    def cleanup_close():
+                        self._sse_channels.pop(connection_id, None)
+                    
+                    if hasattr(sender, 'close_callback'):
+                        sender.close_callback = cleanup_close
+                    
+                    return result
+                return result
+            
+            # 标记为 SSE 路由，用于自动注册为流式路由
+            sse_wrapper._is_sse_route = True
+            self._add_route(rule, sse_wrapper, ['GET'], _from_decorator=True)
+            return sse_wrapper
+        
+        return decorator
+    
+    def file(self, rule: str, methods: Optional[List[str]] = None, **options):
+        """文件响应装饰器 - 返回值将被视为文件路径或文件内容"""
+        if methods is None:
+            methods = ['GET']
+        
+        def decorator(func):
+            @functools.wraps(func)
+            def file_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 返回TypedResponse对象
+                if isinstance(result, str):
+                    return TypedResponse(result, ResponseType.FILE)
+                elif isinstance(result, tuple) and len(result) == 2:
+                    # 支持 (file_path, mime_type) 格式
+                    file_path, mime_type = result
+                    return TypedResponse(file_path, ResponseType.FILE, mime_type=mime_type)
+                return result
+            
+            self._add_route(rule, file_wrapper, methods, _from_decorator=True)
+            return file_wrapper
+        
+        return decorator
+    
+    def custom(self, rule: str, methods: Optional[List[str]] = None, **options):
+        """自定义响应装饰器 - 支持元组格式 (content, content_type) 或 (content, content_type, status_code)"""
+        if methods is None:
+            methods = ['GET']
+        
+        def decorator(func):
+            @functools.wraps(func)
+            def custom_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 如果已经是HttpResponse或TypedResponse，直接返回
+                if isinstance(result, (HttpResponse, TypedResponse)):
+                    return result
+                # 处理 tuple 返回值格式
+                if isinstance(result, tuple):
+                    if len(result) == 2:
+                        # (content, content_type) 格式
+                        content, content_type = result
+                        if isinstance(content, str):
+                            return TypedResponse(content, ResponseType.CUSTOM, content_type=content_type)
+                        elif isinstance(content, bytes):
+                            return TypedResponse(content, ResponseType.CUSTOM_BYTES, content_type=content_type)
+                        else:
+                            # 其他类型转换为字符串
+                            return TypedResponse(str(content), ResponseType.CUSTOM, content_type=content_type)
+                    elif len(result) == 3:
+                        # (content, content_type, status_code) 格式
+                        content, content_type, status_code = result
+                        if isinstance(content, str):
+                            return TypedResponse(content, ResponseType.CUSTOM, status_code=status_code, content_type=content_type)
+                        elif isinstance(content, bytes):
+                            return TypedResponse(content, ResponseType.CUSTOM_BYTES, status_code=status_code, content_type=content_type)
+                        else:
+                            # 其他类型转换为字符串
+                            return TypedResponse(str(content), ResponseType.CUSTOM, status_code=status_code, content_type=content_type)
+
+                elif isinstance(result, str):
+                    # 默认为 text/plain; charset=utf-8
+                    return TypedResponse(result, ResponseType.CUSTOM, content_type='text/plain; charset=utf-8')
+                elif isinstance(result, bytes):
+                    # 默认为 application/octet-stream
+                    return TypedResponse(result, ResponseType.CUSTOM_BYTES, content_type='application/octet-stream')
+                return result
+            
+            self._add_route(rule, custom_wrapper, methods, _from_decorator=True)
+            return custom_wrapper
+        
+        return decorator
+    
+    def sse_json(self, rule: str, **options):
+        """SSE JSON 响应装饰器 - 返回值将被视为 SSE 格式的 JSON 数据流"""
+        def decorator(func):
+            @functools.wraps(func)
+            def sse_json_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 返回TypedResponse对象
+                if isinstance(result, str):
+                    return TypedResponse(result, ResponseType.SSE_JSON)
+                return result
+            
+            self._add_route(rule, sse_json_wrapper, ['GET'], _from_decorator=True)
+            return sse_json_wrapper
+        
+        return decorator
+    
+    def chunk(self, rule: str, methods: Optional[List[str]] = None, **options):
+        """分块传输响应装饰器 - 返回值将被视为分块数据"""
+        if methods is None:
+            methods = ['GET']
+        
+        def decorator(func):
+            @functools.wraps(func)
+            def chunk_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 处理 generator 对象
+                if hasattr(result, '__iter__') and not isinstance(result, (str, bytes)):
+                    # 将 generator 转换为字符串
+                    chunk_data = ''.join(str(chunk) for chunk in result)
+                    return TypedResponse(chunk_data, ResponseType.CHUNK)
+                # 返回TypedResponse对象
+                elif isinstance(result, str):
+                    return TypedResponse(result, ResponseType.CHUNK)
+                return result
+            
+            self._add_route(rule, chunk_wrapper, methods, _from_decorator=True)
+            return chunk_wrapper
+        
+        return decorator
+    
+    def sse_text(self, rule: str, **options):
+        """SSE 文本响应装饰器 - 返回值将被视为 SSE 格式的文本流"""
+        def decorator(func):
+            @functools.wraps(func)
+            def sse_text_wrapper(*args, **kwargs):
+                result = func(*args, **kwargs)
+                # 返回TypedResponse对象
+                if isinstance(result, str):
+                    return TypedResponse(result, ResponseType.SSE_TEXT)
+                elif isinstance(result, list):
+                    # 自动将列表转换为换行符分隔的文本
+                    text_content = "\n".join(str(item) for item in result)
+                    return TypedResponse(text_content, ResponseType.SSE_TEXT)
+                return result
+            
+            self._add_route(rule, sse_text_wrapper, ['GET'], _from_decorator=True)
+            return sse_text_wrapper
+        
+        return decorator
+    
+
+    
+    def _add_route(self, rule: str, handler: Callable, methods: List[str], _from_decorator: bool = False):
+        """添加路由（内部方法）
+        
+        Args:
+            rule: 路由规则
+            handler: 处理函数
+            methods: HTTP 方法列表
+            _from_decorator: 是否来自装饰器调用（内部参数）
+        """
+        # 严格装饰器模式检查 - 始终启用
+        if not _from_decorator:
+            # 检查调用栈，确定是否来自装饰器
+            import inspect
+            frame = inspect.currentframe()
+            decorator_found = False
+            
+            try:
+                # 向上遍历调用栈，查找装饰器调用
+                current_frame = frame.f_back
+                while current_frame:
+                    code_name = current_frame.f_code.co_name
+                    # 检查是否来自装饰器方法
+                    if code_name in ['html', 'json', 'sse', 'file', 'custom', 'sse_json', 'chunk', 'sse_text']:
+                        decorator_found = True
+                        break
+                    current_frame = current_frame.f_back
+            finally:
+                del frame  # 避免循环引用
+            
+            if not decorator_found:
+                raise RuntimeError(
+                    f"🚫 严格装饰器模式：路由 '{rule}' 必须通过装饰器注册！\n"
+                    f"请使用 @app.html(), @app.json(), @app.sse() 等装饰器注册路由。\n"
+                    f"严禁直接调用 router.add_route() 或 app._add_route() 方法！"
+                )
+        
+        route = Route(rule, handler, methods)
+        self.routes.append(route)
+        
+        # 标记有 HTTP 路由注册
+        self._http_routes_registered = True
+    
+    def add_middleware(self, middleware: Middleware):
+        """添加中间件"""
+        self.middlewares.append(middleware)
+    
+    def is_strict_decorator_mode(self) -> bool:
+        """检查是否启用了严格装饰器模式（始终为 True）"""
+        return True
+        
+    def enable_compression(
+        self,
+        min_size=1024,
+        level=None,
+        enable_gzip=None,
+        enable_deflate=None,
+        enable_brotli=None,
+        enable_zstd=None,
+        enable_lz4=None,
+        excluded_content_types=None,
+        excluded_extensions=None,
+    ):
+        """
+        启用压缩功能
+        
+        Args:
+            min_size: 最小压缩大小（字节），默认为 1024
+            level: 压缩级别（1-9），默认为 6
+            enable_gzip: 是否启用 Gzip 压缩，默认为 True
+            enable_deflate: 是否启用 Deflate 压缩，默认为 True
+            enable_brotli: 是否启用 Brotli 压缩，默认为 True
+            enable_zstd: 是否启用 Zstd 压缩，默认为 True
+            enable_lz4: 是否启用 LZ4 压缩，默认为 False
+            excluded_content_types: 排除的内容类型列表
+            excluded_extensions: 排除的文件扩展名列表
+            
+        Returns:
+            self: 返回自身，支持链式调用
+        """
+        # 将调用转发给底层的 router，使用关键字参数
+        self._router.enable_compression(
+            min_size=min_size,
+            level=level,
+            enable_gzip=enable_gzip,
+            enable_deflate=enable_deflate,
+            enable_brotli=enable_brotli,
+            enable_zstd=enable_zstd,
+            enable_lz4=enable_lz4,
+            excluded_content_types=excluded_content_types,
+            excluded_extensions=excluded_extensions,
+        )
+    
+    def enable_cache(self, **kwargs):
+        """
+        启用缓存功能
+
+        此方法接受缓存配置参数，自动转换为 JSON 配置传递给 Rust 层
+
+        Args:
+            **kwargs: 缓存配置参数，详情请参考 cache_config.build_cache_config 函数
+
+        Returns:
+            self: 返回自身，支持链式调用
+
+        Raises:
+            ValueError: 缺少必需配置字段时抛出
+
+        Example:
+            # 基本配置
+            app.enable_cache(
+                max_memory=64*1024*1024,
+                max_entries=1000,
+                eviction_strategy="Lru",
+                default_ttl=60,
+                cleanup_interval=300,
+                enable_ttl=True,
+                enable_stats=True,
+                stats_interval=60,
+                enable_memory_pool=True,
+                pool_size=1024
+            )
+        """
+        # 使用缓存配置模块构建 JSON 配置
+        config_json = build_cache_config(**kwargs)
+
+        # 调用Rust方法
+        try:
+            self._router.enable_cache(config_json)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise
+
+        return self
+
+    def disable_compression(self):
+        """
+        禁用压缩功能
+
+        Returns:
+            self: 返回自身，支持链式调用
+        """
+        self._router.disable_compression()
+        return self
+    
+    def disable_cache(self):
+        """
+        禁用缓存功能
+        
+        Returns:
+            self: 返回自身，支持链式调用
+        """
+        self._router.disable_cache()
+        return self
+    
+    def enable_version_manager(
+        self, 
+        max_encoding_versions: int = 5,
+        enable_precompression: bool = True,
+        hot_encoding_threshold: float = 0.1,
+        store_original_data: bool = True,
+        cleanup_age_threshold: int = 3600,
+        cleanup_idle_threshold: int = 1800
+    ):
+        """
+        启用多版本缓存管理器
+        
+        多版本缓存管理器可以为同一内容存储多个编码版本（如gzip、br等），
+        根据客户端支持的编码自动选择最优版本，提升缓存命中率和响应速度。
+        
+        Args:
+            max_encoding_versions: 最大编码版本数，默认为 5
+            enable_precompression: 是否启用预压缩，默认为 True
+            hot_encoding_threshold: 热点编码阈值（使用率），默认为 0.1
+            store_original_data: 是否存储原始数据，默认为 True
+            cleanup_age_threshold: 清理策略的年龄阈值（秒），默认为 3600
+            cleanup_idle_threshold: 清理策略的空闲时间阈值（秒），默认为 1800
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            app.enable_version_manager(
+                max_encoding_versions=5,
+                enable_precompression=True,
+                hot_encoding_threshold=0.1
+            )
+        """
+        self._router.enable_version_manager(
+            max_encoding_versions=max_encoding_versions,
+            enable_precompression=enable_precompression,
+            hot_encoding_threshold=hot_encoding_threshold,
+            store_original_data=store_original_data,
+            cleanup_age_threshold=cleanup_age_threshold,
+            cleanup_idle_threshold=cleanup_idle_threshold
+        )
+        return self
+    
+    # ========== 协议配置方法 ==========
+    
+    def enable_h2c(self):
+        """
+        启用 H2C (HTTP/2 over cleartext) 协议支持
+        
+        H2C 允许在非加密连接上使用 HTTP/2 协议，主要用于：
+        - 开发环境测试
+        - 内网服务通信
+        - gRPC over HTTP/2 明文传输
+        
+        Returns:
+            self: 返回自身，支持链式调用
+        """
+        self._router.enable_h2c()
+        return self
+    
+    def enable_h2(self):
+        """
+        启用 HTTP/2 协议支持
+        
+        HTTP/2 提供了更好的性能和多路复用能力，适用于：
+        - 现代 Web 应用
+        - 高并发场景
+        - 需要服务器推送的应用
+        
+        Returns:
+            self: 返回自身，支持链式调用
+        """
+        self._router.enable_h2()
+        return self
+    
+    def configure_protocols(self, *, enable_h2c: bool = False, enable_h2: bool = False):
+        """
+        批量配置协议支持
+        
+        Args:
+            enable_h2c: 是否启用 H2C (HTTP/2 over cleartext)
+            enable_h2: 是否启用 HTTP/2
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            app.configure_protocols(enable_h2c=True, enable_h2=True)
+        """
+        if enable_h2c:
+            self._router.enable_h2c()
+        if enable_h2:
+            self._router.enable_h2()
+        return self
+    
+    def is_h2c_enabled(self) -> bool:
+        """
+        检查是否启用了 H2C 协议
+        
+        Returns:
+            bool: 是否启用了 H2C
+        """
+        return self._router.is_h2c_enabled()
+    
+    def is_h2_enabled(self) -> bool:
+        """
+        检查是否启用了 HTTP/2 协议
+        
+        Returns:
+            bool: 是否启用了 HTTP/2
+        """
+        return self._router.is_h2_enabled()
+    
+    # ========== 证书配置方法 ==========
+    
+    def enable_development_mode(self, hostnames: list = None):
+        """
+        启用开发模式（自动生成自签名证书）
+        
+        Args:
+            hostnames: 主机名列表，默认为 ["localhost", "127.0.0.1"]
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            app.enable_development_mode(["localhost", "127.0.0.1"])
+        """
+        if hostnames is None:
+            hostnames = ["localhost", "127.0.0.1"]
+        self._router.enable_development_mode(hostnames)
+        return self
+    
+    def configure_acme_certs(self, domains: list, cert_config):
+        """
+        配置 ACME 自动证书
+        
+        Args:
+            domains: 域名列表
+            cert_config: 证书管理器配置对象
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            from rat_engine import CertManagerConfig
+            cert_config = CertManagerConfig.acme_config(
+                email="admin@example.com",
+                production=False
+            )
+            app.configure_acme_certs(["example.com"], cert_config)
+        """
+        self._router.configure_acme_certs(domains, cert_config)
+        return self
+    
+    def configure_mtls(self, cert_config):
+        """
+        配置 mTLS 双向认证
+        
+        Args:
+            cert_config: 证书管理器配置对象，必须启用 mTLS
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            from rat_engine import CertManagerConfig
+            cert_config = CertManagerConfig.mtls_self_signed_config(
+                auto_generate_client_cert=True,
+                client_cert_subject="CN=Client,O=Example Corp"
+            )
+            app.configure_mtls(cert_config)
+        """
+        self._router.configure_mtls(cert_config)
+        return self
+    
+    def configure_production_certs(self, cert_config):
+        """
+        配置生产环境证书
+        
+        Args:
+            cert_config: 证书管理器配置对象
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            from rat_engine import CertManagerConfig
+            cert_config = CertManagerConfig.production_config(
+                cert_file="/path/to/cert.pem",
+                key_file="/path/to/key.pem"
+            )
+            app.configure_production_certs(cert_config)
+        """
+        self._router.configure_production_certs(cert_config)
+        return self
+    
+    def enable_spa(self, fallback_path: str = "/index.html"):
+        """
+        启用 SPA (单页应用) 支持
+        
+        Args:
+            fallback_path: SPA 回退路径，通常是 index.html
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            app.enable_spa("/index.html")
+            app.enable_spa("/app/index.html")
+        """
+        self._router.enable_spa(fallback_path)
+        return self
+    
+    def disable_spa(self):
+        """
+        禁用 SPA (单页应用) 支持
+        
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            app.disable_spa()
+        """
+        self._router.disable_spa()
+        return self
+    
+    def configure_spa(self, enabled: bool, fallback_path: Optional[str] = None):
+        """
+        配置 SPA (单页应用) 设置
+        
+        Args:
+            enabled: 是否启用 SPA 支持
+            fallback_path: SPA 回退路径，当启用时必须提供
+            
+        Returns:
+            self: 返回自身，支持链式调用
+            
+        Example:
+            app.configure_spa(True, "/index.html")
+            app.configure_spa(False)
+        """
+        self._router.configure_spa(enabled, fallback_path)
+        return self
+
+    def configure_logging(self, level: str = "info", enable_access_log: bool = True, enable_error_log: bool = True,
+                         enable_colors: bool = True, enable_emoji: bool = True,
+                         show_timestamp: bool = True, show_module: bool = True, log_file: str = None):
+        """配置日志系统（代理到server.configure_logging）
+
+        Args:
+            level: 日志级别 ("error", "warn", "info", "debug", "trace")
+            enable_access_log: 是否启用访问日志
+            enable_error_log: 是否启用错误日志
+            enable_colors: 是否启用颜色输出
+            enable_emoji: 是否启用 emoji
+            show_timestamp: 是否显示时间戳
+            show_module: 是否显示模块名
+            log_file: 日志文件路径（可选）
+        """
+        # 构建日志配置JSON
+        log_config_json = {
+            "level": level,
+            "enable_colors": enable_colors,
+            "enable_emoji": enable_emoji,
+            "show_timestamp": show_timestamp,
+            "show_module": show_module,
+            "log_file": log_file
+        }
+        import json
+        log_config_str = json.dumps(log_config_json)
+
+        # 代理到server的configure_logging方法
+        self.server.configure_logging(log_config_str)
+        self._logging_configured = True
+    
+        
+    def before_request(self, func: Callable):
+        """请求前处理装饰器"""
+        self.before_request_handlers.append(func)
+        return func
+    
+    def after_request(self, func: Callable):
+        """请求后处理装饰器"""
+        self.after_request_handlers.append(func)
+        return func
+    
+    def errorhandler(self, code: int):
+        """错误处理装饰器"""
+        def decorator(func):
+            self.error_handlers[code] = func
+            return func
+        return decorator
+    
+    def _handle_request(self, request_data) -> HttpResponse:
+        """处理 HTTP 请求的核心逻辑"""
+        # 🔧 [调试信息] 请求处理调试 - 如需调试请求处理问题，可取消注释以下行
+        # print(f"🔧 [PYTHON-DEBUG] _handle_request 被调用")
+        # print(f"🔧 [PYTHON-DEBUG] request_data 类型: {type(request_data)}")
+        # print(f"🔧 [PYTHON-DEBUG] request_data 内容: {request_data}")
+        
+        # 如果传入的是字典，转换为 HttpRequest 对象
+        if isinstance(request_data, dict):
+            request = HttpRequest(
+                method=request_data.get('method', 'GET'),
+                path=request_data.get('path', '/'),
+                query_string=request_data.get('query', ''),
+                headers=request_data.get('headers', {}),
+                body=request_data.get('body', b''),
+                remote_addr=request_data.get('remote_addr', '127.0.0.1:0'),
+                real_ip=request_data.get('real_ip', '127.0.0.1'),
+                path_params=request_data.get('path_params', {})
+            )
+        else:
+            request = request_data
+            
+        # 设置当前请求
+        self.current_request = request
+        try:
+            with RequestContext(request) as ctx:
+                # 中间件前处理
+                for middleware in self.middlewares:
+                    response = middleware.before_request(request)
+                    if response:
+                        return self._apply_after_middleware(request, response)
+                
+                # 请求前处理器
+                for handler in self.before_request_handlers:
+                    result = handler()
+                    if isinstance(result, HttpResponse):
+                        return self._apply_after_middleware(request, result)
+                
+                # 路由匹配
+                for route in self.routes:
+                    params = route.match(request.path, request.method)
+                    if params is not None:
+                        # 🔧 [调试信息] 路由匹配调试 - 如需调试路由匹配问题，可取消注释以下行
+                # print(f"🔧 [PYTHON-DEBUG] 路由匹配成功: {route.pattern}")
+                # print(f"🔧 [PYTHON-DEBUG] 提取的参数: {params}")
+                # print(f"🔧 [PYTHON-DEBUG] 请求路径: {request.path}")
+                        ctx.path_params = params
+                        
+                        # 调用路由处理函数
+                        response = self._call_handler(route.handler, request, params)
+                        return self._apply_after_middleware(request, response)
+                
+                # 没有匹配的路由
+                return self._handle_error(request, 404, "Not Found")
+        
+        except Exception as e:
+            return self._handle_exception(request, e)
+        finally:
+            # 清理当前请求
+            self.current_request = None
+    
+    def _call_handler(self, handler: Callable, request: HttpRequest, params: Dict[str, Any]) -> HttpResponse:
+        """调用路由处理函数"""
+        # 检查函数签名
+        sig = inspect.signature(handler)
+        
+        # 检查是否是装饰器包装的函数（通过检查__wrapped__属性）
+        if hasattr(handler, '__wrapped__'):
+            # 🔧 [调试信息] 装饰器调用调试 - 如需调试装饰器包装函数调用问题，可取消注释以下行
+            # print(f"🔧 [PYTHON-DEBUG] 调用装饰器包装的函数")
+            # print(f"🔧 [PYTHON-DEBUG] 传递的参数: {params}")
+            # 对于装饰器包装的函数，直接传递request_data作为第一个参数
+            # 处理 body 字段：如果是字节数组，尝试解码
+            body_data = request.body
+            if isinstance(body_data, (list, bytes)):
+                try:
+                    if isinstance(body_data, list):
+                        # 字节数组转换为字节串
+                        body_bytes = bytes(body_data)
+                    else:
+                        body_bytes = body_data
+                    # 尝试解码为 UTF-8 字符串
+                    body_data = body_bytes.decode('utf-8')
+                except (UnicodeDecodeError, ValueError):
+                    # 解码失败时保持原始格式
+                    pass
+            
+            request_data_dict = {
+                'method': request.method,
+                'path': request.path,
+                'query': request.query_string,
+                'headers': request.headers,
+                'body': body_data,
+                'path_params': params  # 使用路由匹配得到的参数，而不是request.path_params
+            }
+            
+            # 准备路径参数作为kwargs
+            kwargs = {}
+            for param_name in params:
+                kwargs[param_name] = params[param_name]
+            
+            result = handler(request_data_dict, **kwargs)
+        else:
+            # 对于未装饰的函数，使用原来的逻辑
+            kwargs = {}
+            for param_name, param in sig.parameters.items():
+                if param_name == 'request':
+                    kwargs[param_name] = request
+                elif param_name == 'request_data':
+                    # 传递原始请求数据（字典格式）
+                    # 处理 body 字段：如果是字节数组，尝试解码
+                    body_data = request.body
+                    if isinstance(body_data, (list, bytes)):
+                        try:
+                            if isinstance(body_data, list):
+                                # 字节数组转换为字节串
+                                body_bytes = bytes(body_data)
+                            else:
+                                body_bytes = body_data
+                            # 尝试解码为 UTF-8 字符串
+                            body_data = body_bytes.decode('utf-8')
+                        except (UnicodeDecodeError, ValueError):
+                            # 解码失败时保持原始格式
+                            pass
+                    
+                    request_data_dict = {
+                        'method': request.method,
+                        'path': request.path,
+                        'query': request.query_string,
+                        'headers': request.headers,
+                        'body': body_data,
+                        'path_params': params  # 使用路由匹配得到的参数，而不是request.path_params
+                    }
+                    kwargs[param_name] = request_data_dict
+                elif param_name in params:
+                    kwargs[param_name] = params[param_name]
+            
+            # 调用处理函数
+            if kwargs:
+                result = handler(**kwargs)
+            else:
+                result = handler()
+        
+        # 转换返回值为 HttpResponse
+        return self._make_response(result)
+    
+    def _make_response(self, result: Any) -> HttpResponse:
+        """将处理函数返回值转换为 HttpResponse"""
+        # _make_response 收到结果
+        if isinstance(result, HttpResponse):
+            return result
+        
+        # 处理流式响应对象（重构后的新架构）
+        # 新架构中使用 PySseResponse 和 PyChunkedResponse
+        
+        # 处理 TypedResponse 对象
+        if isinstance(result, TypedResponse):
+            # 获取状态码和头部信息
+            status_code = result.kwargs.get('status_code', 200)
+            headers = result.kwargs.get('headers', {})
+            
+            if result.response_type == ResponseType.JSON:
+                response = HttpResponse.json(result.content, status=status_code)
+            elif result.response_type == ResponseType.HTML:
+                response = HttpResponse.html(result.content, status=status_code)
+            elif result.response_type == ResponseType.TEXT:
+                response = HttpResponse.text(result.content, status=status_code)
+            elif result.response_type == ResponseType.SSE:
+                response = HttpResponse.sse(result.content)
+            elif result.response_type == ResponseType.FILE:
+                if 'mime_type' in result.kwargs:
+                    response = self.send_file(result.content, mimetype=result.kwargs['mime_type'])
+                else:
+                    response = self.send_file(result.content, **result.kwargs)
+            elif result.response_type == ResponseType.REDIRECT:
+                response = HttpResponse.redirect(result.content)
+            elif result.response_type == ResponseType.CUSTOM:
+                response = HttpResponse.text(result.content, status=status_code)
+                if 'content_type' in result.kwargs:
+                    response.set_header('Content-Type', result.kwargs['content_type'])
+            elif result.response_type == ResponseType.CUSTOM_BYTES:
+                response = HttpResponse(body=result.content, headers={}, status=status_code)
+                if 'content_type' in result.kwargs:
+                    response.set_header('Content-Type', result.kwargs['content_type'])
+            elif result.response_type == ResponseType.SSE_JSON:
+                response = HttpResponse.sse_json(result.content)
+            elif result.response_type == ResponseType.SSE_TEXT:
+                response = HttpResponse.sse_text(result.content)
+            elif result.response_type == ResponseType.CHUNK:
+                response = HttpResponse.chunk(result.content)
+            else:
+                response = HttpResponse.text(str(result.content), status=status_code)
+            
+            # 设置自定义头部
+            if headers:
+                for header_name, header_value in headers.items():
+                    response.set_header(header_name, header_value)
+            
+            return response
+        
+        # 处理 tuple 返回值 - 支持 (content, status_code) 格式
+        if isinstance(result, tuple):
+            if len(result) == 2:
+                content, status_code = result
+                # 确保状态码是整数
+                if isinstance(status_code, int):
+                    # 根据内容类型自动选择响应格式
+                    if isinstance(content, dict):
+                        return HttpResponse.json(content, status=status_code)
+                    elif isinstance(content, list):
+                        return HttpResponse.json(content, status=status_code)
+                    elif isinstance(content, str):
+                        # 检查是否是 HTML 内容
+                        if content.strip().startswith('<') and content.strip().endswith('>'):
+                            return HttpResponse.html(content, status=status_code)
+                        else:
+                            return HttpResponse.text(content, status=status_code)
+                    else:
+                        # 其他类型转换为字符串
+                        return HttpResponse.text(str(content), status=status_code)
+                else:
+                    # 如果第二个元素不是状态码，按照原有的 (content, content_type) 处理
+                    content, content_type = result
+                    if isinstance(content, str):
+                        response = HttpResponse.text(content)
+                        response.set_header('Content-Type', str(content_type))
+                        return response
+                    elif isinstance(content, bytes):
+                        response = HttpResponse(body=content, headers={})
+                        response.set_header('Content-Type', str(content_type))
+                        return response
+                    else:
+                        # 其他类型转换为字符串
+                        response = HttpResponse.text(str(content))
+                        response.set_header('Content-Type', str(content_type))
+                        return response
+            elif len(result) == 3:
+                # 支持 (content, status_code, headers) 格式
+                content, status_code, headers = result
+                if isinstance(status_code, int) and isinstance(headers, dict):
+                    if isinstance(content, dict):
+                        response = HttpResponse.json(content, status=status_code)
+                    elif isinstance(content, list):
+                        response = HttpResponse.json(content, status=status_code)
+                    elif isinstance(content, str):
+                        if content.strip().startswith('<') and content.strip().endswith('>'):
+                            response = HttpResponse.html(content, status=status_code)
+                        else:
+                            response = HttpResponse.text(content, status=status_code)
+                    else:
+                        response = HttpResponse.text(str(content), status=status_code)
+                    
+                    # 设置额外的响应头
+                    for key, value in headers.items():
+                        response.set_header(str(key), str(value))
+                    return response
+        
+        # 处理字典和列表 - 自动转换为 JSON
+        if isinstance(result, (dict, list)):
+            return HttpResponse.json(result)
+        
+        # Default: treat as plain text
+        return HttpResponse.text(str(result))
+    
+    def _apply_after_middleware(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
+        """应用后置中间件和处理器"""
+        # 请求后处理器
+        for handler in self.after_request_handlers:
+            response = handler(response) or response
+        
+        # 中间件后处理
+        for middleware in reversed(self.middlewares):
+            response = middleware.after_request(request, response)
+        
+        return response
+    
+    def _handle_exception(self, request: HttpRequest, error: Exception) -> HttpResponse:
+        """处理异常"""
+        # 中间件错误处理
+        for middleware in self.middlewares:
+            response = middleware.on_error(request, error)
+            if response:
+                return response
+        
+        # 使用安全错误处理器
+        from rat_engine.security import handle_secure_error
+        
+        # 构建请求信息
+        request_info = {
+            'method': request.method,
+            'path': request.path,
+            'client_ip': getattr(request, 'remote_addr', 'Unknown'),
+            'user_agent': request.headers.get('User-Agent', 'Unknown')
+        }
+        
+        # 安全处理错误：详细信息记录到日志，客户端收到通用消息
+        client_message, error_id = handle_secure_error(
+            error, 
+            request_info, 
+            debug_mode=getattr(self, 'debug', False)
+        )
+        
+        # 在响应头中包含错误ID（便于调试）
+        response = self._handle_error(request, 500, client_message)
+        if hasattr(response, 'headers'):
+            response.set_header('X-Error-ID', error_id)
+        
+        return response
+    
+    def _handle_error(self, request: HttpRequest, code: int, message: str) -> HttpResponse:
+        """处理错误响应"""
+        if code in self.error_handlers:
+            try:
+                result = self.error_handlers[code]()
+                return self._make_response(result)
+            except Exception:
+                pass
+        
+        return HttpResponse.error(message, code)
+    
+    def run(self, host: str = "127.0.0.1", port: int = 8000, debug: bool = False,
+            log_level: str = "info", enable_access_log: bool = True, enable_error_log: bool = True, 
+            blocking: bool = False, **kwargs):
+        """启动应用
+        
+        Args:
+            host: 服务器主机地址
+            port: 服务器端口
+            debug: 是否启用调试模式
+            log_level: 日志级别 ("error", "warn", "info", "debug", "trace")
+            enable_access_log: 是否启用访问日志
+            enable_error_log: 是否启用错误日志
+            blocking: 是否阻塞模式（True: 阻塞直到收到停止信号，False: 非阻塞立即返回）
+            **kwargs: 其他参数
+        """
+        # 如果用户没有手动调用configure_logging，则使用默认配置
+        if not hasattr(self, '_logging_configured'):
+            self.configure_logging(level=log_level)
+
+        # 自动初始化 HTTP 队列桥接适配器（如果有 HTTP 路由注册）
+        if self._http_routes_registered and not self._http_bridge_initialized:
+            try:
+                # 定义默认的 HTTP 消息处理器
+                def default_http_message_handler(message_info):
+                    """默认的 HTTP 消息处理器"""
+                    msg_type = message_info.get('type', 'unknown')
+                    if debug:
+                        if msg_type == 'connection_established':
+                            connection_id = message_info.get('connection_id')
+                            protocol = message_info.get('protocol')
+                            print(f"🔗 新连接建立: {connection_id} (协议: {protocol})")
+                        elif msg_type == 'connection_closed':
+                            connection_id = message_info.get('connection_id')
+                            reason = message_info.get('reason')
+                            print(f"🔌 连接关闭: {connection_id} (原因: {reason})")
+                        elif msg_type == 'request_received':
+                            connection_id = message_info.get('connection_id')
+                            request_id = message_info.get('request_id')
+                            method = message_info.get('method')
+                            path = message_info.get('path')
+                            print(f"📨 收到 HTTP 请求: {method} {path} (连接: {connection_id}, 请求: {request_id})")
+                
+                # 初始化 HTTP 队列桥接适配器
+                if hasattr(self._router, 'initialize_http_queue_bridge'):
+                    self._router.initialize_http_queue_bridge(default_http_message_handler)
+                    self._http_bridge_initialized = True
+                    if debug:
+                        print("✅ 检测到 HTTP 路由，HTTP 队列桥接适配器已自动初始化")
+                else:
+                    if debug:
+                        print("⚠️ 当前版本不支持 HTTP 队列桥接，使用标准模式")
+            except Exception as e:
+                if debug:
+                    print(f"⚠️ HTTP 队列桥接适配器初始化失败: {e}")
+                    print("   将使用标准模式运行")
+                # 即使初始化失败也继续运行，使用标准模式
+        elif self._http_routes_registered and debug:
+            print("ℹ️ HTTP 队列桥接适配器已初始化")
+        elif not self._http_routes_registered and debug:
+            print("ℹ️ 未检测到 HTTP 路由，跳过 HTTP 队列桥接初始化")
+        
+        # 自动初始化 gRPC 队列桥接适配器（如果有 gRPC 路由注册）
+        if self._grpc_routes_registered and not self._grpc_bridge_initialized:
+            try:
+                # 通过 main_thread 实例调用 initialize_queue_bridge 方法
+                if self.main_thread is not None:
+                    self.main_thread.initialize_queue_bridge()
+                    self._grpc_bridge_initialized = True
+                    if debug:
+                        print("✅ 检测到 gRPC 路由，gRPC 队列桥接适配器已自动初始化")
+                else:
+                    if debug:
+                        print("⚠️ main_thread 未初始化，无法初始化 gRPC 队列桥接适配器")
+            except Exception as e:
+                if debug:
+                    print(f"⚠️ gRPC 队列桥接适配器初始化失败: {e}")
+                    print("   请确保在使用 gRPC 功能前正确配置队列桥接")
+                # 即使初始化失败也继续运行，让用户手动处理
+        elif self._grpc_routes_registered and debug:
+            print("ℹ️ gRPC 队列桥接适配器已初始化")
+        elif not self._grpc_routes_registered and debug:
+            print("ℹ️ 未检测到 gRPC 路由，跳过 gRPC 队列桥接初始化")
+        
+        # 设置优雅退出机制（仅在阻塞模式下）
+        if blocking:
+            self._setup_graceful_shutdown()
+        
+        # 调用启动回调函数
+        self._call_startup_handlers()
+        
+        if debug:
+            print(f"🚀 RAT Engine starting on http://{host}:{port}")
+            print(f"📊 Registered {len(self.routes)} routes:")
+            for route in self.routes:
+                print(f"   {', '.join(route.methods)} {route.pattern}")
+            print(f"🔧 Middlewares: {len(self.middlewares)}")
+            print(f"🧩 Extensions: {len(self.extensions)}")
+            for ext_name in self.extensions:
+                print(f"   📦 {ext_name}")
+            print(f"⚡ High-performance Rust backend with work-stealing scheduler")
+            mode_text = "阻塞 (Blocking)" if blocking else "非阻塞 (Non-blocking)"
+            print(f"🔄 Mode: {mode_text}")
+            print(f"📝 Log level: {log_level}")
+            print(f"📋 Access log: {enable_access_log}, Error log: {enable_error_log}")
+            if self.celery_config.get('broker_url'):
+                print(f"🔄 Celery broker: {self.celery_config['broker_url']}")
+            if blocking:
+                print("⏸️ 按 Ctrl+C 优雅停止服务器")
+            print("\n" + "="*50)
+        
+        try:
+            # 注册路由到 router（只注册一次）
+            if not self._global_handler_registered:
+                # 注册所有路由到 router
+                for route in self.routes:
+                    for method in route.methods:
+                        # 检查是否为 SSE 路由
+                        if hasattr(route.handler, '_is_sse_route') and route.handler._is_sse_route:
+                            # print(f"🔧 [PYTHON-DEBUG] 注册SSE路由: {method} {route.pattern}")
+                            self._router.add_sse_route(method, route.pattern, route.handler)
+                            if debug:
+                                print(f"   📡 SSE Registered route: {method} {route.pattern}")
+                        else:
+                            # 🔧 [调试信息] 路由注册调试 - 如需调试路由注册问题，可取消注释以下行
+                # print(f"🔧 [PYTHON-DEBUG] 注册普通路由: {method} {route.pattern}")
+                # print(f"🔧 [PYTHON-DEBUG] 处理器: {self._handle_request}")
+                            self._router.add_route(method, route.pattern, self._handle_request)
+                            if debug:
+                                print(f"   🌐 HTTP Registered route: {method} {route.pattern}")
+                self._global_handler_registered = True
+            
+            # 使用新的 server 和 router 运行（非阻塞模式）
+            try:
+                self.server.run(self._router, host, port)
+            except Exception as e:
+                print(f"[ERROR] server.run 执行失败: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+        except KeyboardInterrupt:
+            if debug:
+                print("\n🛑 Server stopped by user")
+            self.stop()
+        
+        # 阻塞模式：等待停止信号
+        if blocking:
+            try:
+                if debug:
+                    print(f"✅ 服务器启动成功，访问 http://{host}:{port}")
+                # 优雅等待停止信号（替代无限循环）
+                self._stop_event.wait()
+            except KeyboardInterrupt:
+                if debug:
+                    print("\n🛑 收到停止信号，正在优雅关闭服务器...")
+            finally:
+                self.stop()
+                if debug:
+                    print("🧹 清理资源完成")
+                    print("👋 服务器已停止")
+    
+    def stop(self):
+        """停止应用"""
+        # 调用关闭回调函数
+        self._call_shutdown_handlers()
+        
+        if hasattr(self, '_stop_event'):
+            self._stop_event.set()
+        # 兼容旧版本没有stop方法的情况
+        if hasattr(self.server, 'stop'):
+            self.server.stop()
+    
+    def is_running(self) -> bool:
+        """检查是否正在运行"""
+        return self.server.is_running()
+    
+    def get_metrics(self) -> Dict[str, float]:
+        """获取性能指标"""
+        return self.server.get_metrics()
+    
+    def reset_metrics(self):
+        """重置性能指标"""
+        self.server.reset_metrics()
+    
+    def get_server_info(self) -> Dict[str, str]:
+        """获取服务器信息"""
+        return self.server.get_server_info()
+    
+    # 文件处理方法
+    def send_static_file(self, filename: str, static_folder: str = "static") -> HttpResponse:
+        """发送静态文件
+        
+        Args:
+            filename: 文件名
+            static_folder: 静态文件夹路径
+            
+        Returns:
+            HttpResponse: 文件响应
+        """
+        import os
+        import mimetypes
+        
+        # 构建完整文件路径
+        file_path = os.path.join(static_folder, filename)
+        
+        if not os.path.exists(file_path):
+            return HttpResponse(status=404, body=b"File not found")
+        
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            
+            # 猜测 MIME 类型
+            mimetype, _ = mimetypes.guess_type(file_path)
+            if not mimetype:
+                mimetype = 'application/octet-stream'
+            
+            response = HttpResponse(status=200, body=content)
+            response.set_header('Content-Type', mimetype)
+            return response
+        except Exception as e:
+            return HttpResponse(status=500, body=f"Error reading file: {str(e)}".encode())
+    
+    def send_file(self, file_path, as_attachment: bool = False, 
+                  attachment_filename: str = None, mimetype: str = None) -> HttpResponse:
+        """发送文件
+        
+        Args:
+            file_path: 文件路径(str)或文件对象(BytesIO)
+            as_attachment: 是否作为附件下载
+            attachment_filename: 附件文件名
+            mimetype: MIME 类型
+            
+        Returns:
+            HttpResponse: 文件响应
+        """
+        import os
+        from io import BytesIO
+        
+        # 处理 BytesIO 对象
+        if isinstance(file_path, BytesIO):
+            content = file_path.getvalue()
+            filename = attachment_filename or "download"
+        else:
+            # 处理文件路径
+            if not os.path.exists(file_path):
+                return HttpResponse.error("File not found", 404)
+            
+            # 读取文件内容
+            try:
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+            except Exception as e:
+                return HttpResponse.error(f"Error reading file: {str(e)}", 500)
+            
+            filename = attachment_filename or os.path.basename(file_path)
+        
+        # 创建文件响应
+        import mimetypes
+        
+        if not mimetype:
+            mimetype, _ = mimetypes.guess_type(filename)
+            if not mimetype:
+                mimetype = 'application/octet-stream'
+        
+        response = HttpResponse(status=200, body=content)
+        response.set_header('Content-Type', mimetype)
+        
+        # 设置下载头
+        if as_attachment:
+            response.set_header('Content-Disposition', f'attachment; filename="{filename}"')
+        
+        return response
+    
+    def send_base64_image(self, base64_data: str, filename: str = None, 
+                         mimetype: str = None) -> HttpResponse:
+        """发送 Base64 编码的图片
+        
+        Args:
+            base64_data: Base64 编码的图片数据
+            filename: 文件名
+            mimetype: MIME 类型
+            
+        Returns:
+            HttpResponse: 图片响应
+        """
+        import base64
+        
+        try:
+            # 解码 Base64 数据
+            content = base64.b64decode(base64_data)
+            
+            # 设置默认 MIME 类型
+            if not mimetype:
+                mimetype = 'image/png'  # 默认为 PNG
+            
+            response = HttpResponse(status=200, body=content)
+            response.set_header('Content-Type', mimetype)
+            if filename:
+                response.set_header('Content-Disposition', f'inline; filename="{filename}"')
+            
+            return response
+        except Exception as e:
+            return HttpResponse(status=400, body=f"Invalid base64 image data: {str(e)}".encode())
+    
+    def send_from_gridfs(self, gridfs_file, filename: str = None) -> HttpResponse:
+        """从 GridFS 发送文件
+        
+        Args:
+            gridfs_file: GridFS 文件对象
+            filename: 文件名
+            
+        Returns:
+            HttpResponse: 文件响应
+        """
+        try:
+            # 读取 GridFS 文件内容
+            content = gridfs_file.read()
+            content_type = getattr(gridfs_file, 'content_type', None)
+            file_name = filename or getattr(gridfs_file, 'filename', 'file')
+            
+            # 创建文件响应
+            response = HttpResponse(status=200, body=content)
+            
+            if content_type:
+                response.set_header('Content-Type', content_type)
+            else:
+                response.set_header('Content-Type', 'application/octet-stream')
+            
+            response.set_header('Content-Disposition', f'inline; filename="{file_name}"')
+            return response
+                
+        except Exception as e:
+            return HttpResponse(status=500, body=f"GridFS error: {str(e)}".encode())
+    
+    def send_pil_image(self, pil_image, format: str = 'PNG', filename: str = None, 
+                      quality: int = 95) -> HttpResponse:
+        """发送 PIL 图片对象
+        
+        Args:
+            pil_image: PIL Image 对象
+            format: 图片格式 (PNG, JPEG, etc.)
+            filename: 文件名
+            quality: 图片质量 (仅对 JPEG 有效)
+            
+        Returns:
+            HttpResponse: 图片响应
+        """
+        try:
+            from io import BytesIO
+            
+            # 将 PIL 图片转换为字节
+            img_buffer = BytesIO()
+            save_kwargs = {'format': format}
+            if format.upper() == 'JPEG':
+                save_kwargs['quality'] = quality
+                save_kwargs['optimize'] = True
+            
+            pil_image.save(img_buffer, **save_kwargs)
+            content = img_buffer.getvalue()
+            
+            # 确定 MIME 类型
+            mime_types = {
+                'PNG': 'image/png',
+                'JPEG': 'image/jpeg',
+                'JPG': 'image/jpeg',
+                'GIF': 'image/gif',
+                'BMP': 'image/bmp',
+                'WEBP': 'image/webp'
+            }
+            mimetype = mime_types.get(format.upper(), 'image/png')
+            
+            # 生成文件名
+            if not filename:
+                ext = format.lower()
+                filename = f'image.{ext}'
+            
+            # 创建图片响应
+            response = HttpResponse(status=200, body=content)
+            response.set_header('Content-Type', mimetype)
+            response.set_header('Content-Disposition', f'inline; filename="{filename}"')
+            return response
+                
+        except Exception as e:
+            return HttpResponse(status=500, body=f"PIL image error: {str(e)}".encode())
+
+
+# 便利函数和装饰器
+def request() -> HttpRequest:
+    """获取当前请求对象"""
+    req = get_current_request()
+    if req is None:
+        raise RuntimeError("No request context available")
+    return req
+
+
+def path_params() -> Dict[str, Any]:
+    """获取路径参数"""
+    return get_path_params()
+
+
+# 常用中间件
+class CORSMiddleware(Middleware):
+    """CORS 中间件"""
+    
+    def __init__(self, 
+                 origins: List[str] = None,
+                 methods: List[str] = None,
+                 headers: List[str] = None,
+                 credentials: bool = False):
+        self.origins = origins or ["*"]
+        self.methods = methods or ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        self.headers = headers or ["Content-Type", "Authorization"]
+        self.credentials = credentials
+    
+    def before_request(self, request: HttpRequest) -> Optional[HttpResponse]:
+        if request.method == "OPTIONS":
+            response = HttpResponse(status=200)
+            self._set_cors_headers(response)
+            return response
+        return None
+    
+    def after_request(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
+        self._set_cors_headers(response)
+        return response
+    
+    def _set_cors_headers(self, response: HttpResponse):
+        response.set_cors(
+            origin=", ".join(self.origins),
+            methods=self.methods,
+            headers=self.headers,
+            credentials=self.credentials
+        )
+
+
+class LoggingMiddleware(Middleware):
+    """增强的日志中间件"""
+    
+    def __init__(self, enable_access_log: bool = True, enable_error_log: bool = True):
+        self.enable_access_log = enable_access_log
+        self.enable_error_log = enable_error_log
+        self.start_time = None
+    
+    def before_request(self, request: HttpRequest) -> Optional[HttpResponse]:
+        import time
+        self.start_time = time.time()
+        # 日志由 Rust 层统一处理
+        return None
+    
+    def after_request(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
+        # 日志由 Rust 层统一处理
+        return response
+    
+    def on_error(self, request: HttpRequest, error: Exception) -> Optional[HttpResponse]:
+        # 错误信息由 Rust 层统一处理和打印
+        return None
+
+
+# CLI 工具
+def create_app_from_file(filename: str) -> RatApp:
+    """从文件创建应用"""
+    import importlib.util
+    
+    spec = importlib.util.spec_from_file_location("app", filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    
+    # 查找 RatApp 应用实例
+    for name in dir(module):
+        obj = getattr(module, name)
+        if isinstance(obj, RatApp):
+            return obj
+    
+    raise ValueError(f"No RatApp found in {filename}")
+
+
+def run_cli():
+    """命令行工具入口"""
+    import argparse
+    import sys
+    
+    parser = argparse.ArgumentParser(description="RAT Engine CLI")
+    parser.add_argument("app", help="Python file containing RatApp")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--workers", type=int, help="Number of worker threads")
+    parser.add_argument("--max-connections", type=int, help="Maximum connections")
+    
+    args = parser.parse_args()
+    
+    try:
+        app = create_app_from_file(args.app)
+        
+        # 更新服务器配置
+        if args.workers:
+            app._router = PyRouter()
+            app.server = PyServer(
+                host=args.host,
+                port=args.port,
+                workers=args.workers,
+                max_connections=args.max_connections
+            )
+            app._global_handler_registered = False
+        
+        app.run(host=args.host, port=args.port, debug=args.debug)
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    run_cli()

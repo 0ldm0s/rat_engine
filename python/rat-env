@@ -1,0 +1,34 @@
+#!/bin/bash
+# RAT Engine 环境管理便捷脚本
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/setup_env.sh"
+
+case "$1" in
+    "status")
+        show_status
+        ;;
+    "test")
+        test_import
+        ;;
+    "install")
+        install_permanent_env
+        ;;
+    "uninstall")
+        uninstall_permanent_env
+        ;;
+    "temp")
+        setup_temp_env
+        ;;
+    *)
+        echo "RAT Engine 环境管理工具"
+        echo "用法: rat-env [命令]"
+        echo
+        echo "可用命令:"
+        echo "  status     - 显示环境状态"
+        echo "  test       - 测试模块导入"
+        echo "  install    - 安装永久环境配置"
+        echo "  uninstall  - 卸载永久环境配置"
+        echo "  temp       - 设置临时环境变量"
+        ;;
+esac

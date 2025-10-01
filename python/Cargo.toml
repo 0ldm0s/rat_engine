@@ -1,0 +1,21 @@
+[package]
+name = "rat_engine_py"
+version = "1.0.5"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "rat_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21.0", features = ["extension-module"] }
+rat_engine = { path = "../", features = ["python"] }
+bytes = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+[build-dependencies]
+pyo3-build-config = "0.21.0"
+chrono = { version = "0.4", features = ["serde"] }
