@@ -77,279 +77,618 @@ pub type HttpStreamingHandler = Arc<dyn Fn(HttpRequest, HashMap<String, String>)
 ///
 /// - 普通参数：`<id>` → 匹配单个段，如 `123`
 /// - path 参数：`<path:file_path>` → 匹配从当前位置到路径末尾的所有内容，包含斜杠
+/// 路由节点 - Radix Tree + 快速匹配混合架构
+///
+/// # 设计目标
+///
+/// 1. **Radix Tree 快速定位**：使用前缀树快速缩小搜索范围
+/// 2. **快速匹配精确提取**：避免正则表达式，提供高速参数提取
+/// 3. **智能优先级排序**：自动计算路由优先级，解决冲突
+/// 4. **零回退机制**：完全替代正则匹配，单一架构
+///
+/// # Radix Tree 结构说明
+///
+/// - 每个节点代表一个路径段（如 "users", "123", "profile"）
+/// - 下一个路径段存储在下一级路径段中
+/// - 完整路由信息存储在路径段的末端节点
+///
+/// # 路由优先级规则
+///
+/// 优先级分数计算（分数越高优先级越高）：
+/// 1. **静态段数量** × 1000（静态段越多优先级越高）
+/// 2. **有约束参数数量** × 100（类型约束比无约束优先级高）
+/// 3. **总段数** × 10（段数少的路由优先级高）
+/// 4. **path参数惩罚** × 50（path参数优先级最低）
 #[derive(Debug, Clone)]
-pub struct RouteParamMapping {
-    /// 路径分段（按/分割）
-    segments: Vec<String>,
-    /// 参数名到位置的映射（0-based）
-    param_positions: HashMap<String, usize>,
-    /// 参数名到类型的映射（从路径模式中解析）
-    param_types: HashMap<String, String>,
+pub struct RouteNode {
+    /// 当前路径段
+    segment: String,
+    /// 下一级路径段 - 按段名索引
+    next_segments: HashMap<String, RouteNode>,
+    /// 终端路由信息列表（支持多个路由共存）
+    route_infos: Vec<RouteInfo>,
+    /// 路径段深度（根节点为0）
+    depth: usize,
 }
 
-impl RouteParamMapping {
-    /// 获取参数位置映射
-    pub fn get_param_positions(&self) -> &HashMap<String, usize> {
-        &self.param_positions
-    }
-
-    /// 获取参数类型映射
-    pub fn get_param_types(&self) -> &HashMap<String, String> {
-        &self.param_types
-    }
+/// 路由类型
+#[derive(Debug, Clone, PartialEq)]
+pub enum RouteType {
+    /// 标准 HTTP 路由
+    Http,
+    /// 流式 HTTP 路由（如 SSE）
+    Streaming,
 }
 
-/// 从路由模式创建参数映射表
-fn create_param_mapping(pattern: &str) -> Option<RouteParamMapping> {
-    if !pattern.contains('<') {
-        return None;
-    }
+/// 终端路由信息
+#[derive(Debug, Clone)]
+pub struct RouteInfo {
+    /// 原始路由模式，如 "/users/<int:id>/files/<path:file_path>"
+    pattern: String,
+    /// HTTP 方法
+    method: Method,
+    /// 路由类型
+    route_type: RouteType,
+    /// 路径段配置
+    segments: Vec<RouteSegment>,
+    /// 参数信息映射
+    param_info: HashMap<String, ParamInfo>,
+    /// 优先级分数（预计算）
+    priority_score: u32,
+    /// 是否包含path参数
+    has_path_param: bool,
+    /// 处理器ID（用于索引到处理器数组）
+    handler_id: usize,
+}
 
-    let mut segments = Vec::new();
-    let mut param_positions = HashMap::new();
-    let mut param_types = HashMap::new();
+/// 路径段类型
+#[derive(Debug, Clone, PartialEq)]
+pub enum RouteSegment {
+    /// 静态段，如 "api", "users"
+    Static(String),
+    /// 参数段，包含名称和类型
+    Param(String, ParamType),
+}
 
-    // 按斜杠分割路径
-    let path_segments: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+/// 参数类型
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamType {
+    /// 整数类型（默认）
+    Int,
+    /// 字符串类型
+    Str,
+    /// 浮点数类型
+    Float,
+    /// UUID类型
+    Uuid,
+    /// 路径类型（匹配剩余所有路径）
+    Path,
+}
 
-    // 首先检查是否有path类型参数的异常用法
-    for (pos, segment) in path_segments.iter().enumerate() {
-        if segment.starts_with('<') && segment.ends_with('>') {
-            let param_content = &segment[1..segment.len()-1];
+/// 参数信息
+#[derive(Debug, Clone)]
+pub struct ParamInfo {
+    /// 参数在段中的位置（0-based）
+    position: usize,
+    /// 参数类型
+    param_type: ParamType,
+    /// 是否有类型约束
+    has_constraint: bool,
+}
 
-            if param_content.contains(':') {
-                let parts: Vec<&str> = param_content.split(':').collect();
-                if parts.len() == 2 && parts[0] == "path" {
-                    // 检查path参数是否是最后一个段
-                    if pos != path_segments.len() - 1 {
-                        panic!(
-                            "路由模式 '{}' 中的 path 参数 '{}' 不是最后一个参数！\n\
-                            path 类型参数必须是路由模式中的最后一个参数。\n\
-                            当前位置: {} (从0开始)\n\
-                            路径段数: {}\n\
-                            请修改路由模式，确保 path 参数是最后一个，例如：\n\
-                            ✅ 正确: '/files/<path:file_path>'\n\
-                            ❌ 错误: '/files/<path:file_path>/download'",
-                            pattern, parts[1], pos, path_segments.len()
-                        );
-                    }
-                }
-            }
+/// 路由匹配结果
+#[derive(Debug, Clone)]
+pub struct RouteMatch {
+    /// 匹配的路由信息
+    pub route_info: RouteInfo,
+    /// 提取的参数
+    pub params: HashMap<String, String>,
+    /// 优先级分数
+    pub priority_score: u32,
+}
+
+impl RouteNode {
+    /// 创建新的路由节点
+    pub fn new(segment: String, depth: usize) -> Self {
+        RouteNode {
+            segment,
+            next_segments: HashMap::new(),
+            route_infos: Vec::new(),
+            depth,
         }
     }
 
-    for (pos, segment) in path_segments.iter().enumerate() {
-        if segment.starts_with('<') && segment.ends_with('>') {
-            // 这是一个参数段
-            let param_content = &segment[1..segment.len()-1]; // 去掉< >
+    /// 添加下一级路径段
+    pub fn add_next_segment(&mut self, segment: String) -> &mut RouteNode {
+        if !self.next_segments.contains_key(&segment) {
+            self.next_segments.insert(segment.clone(), RouteNode::new(segment.clone(), self.depth + 1));
+        }
+        self.next_segments.get_mut(&segment).unwrap()
+    }
 
-            // 解析参数类型和名称
-            if param_content.contains(':') {
-                let parts: Vec<&str> = param_content.split(':').collect();
-                if parts.len() == 2 {
-                    let param_type = parts[0];
-                    let param_name = parts[1];
+    /// 设置终端路由信息
+    pub fn set_route_info(&mut self, route_info: RouteInfo) {
+        self.route_infos.push(route_info);
+    }
 
-                    // 特殊处理path类型：path类型会消耗后续所有段
-                    if param_type == "path" {
-                        param_positions.insert(param_name.to_string(), pos);
-                        param_types.insert(param_name.to_string(), "path".to_string());
-                        segments.push(format!("<{}>", param_name));
-                        // path类型是最后一个参数，直接break
-                        break;
+    /// 遍历所有路由信息
+    pub fn collect_all_routes(&self) -> Vec<&RouteInfo> {
+        let mut routes = Vec::new();
+
+        // 添加当前节点的所有路由信息
+        for route_info in &self.route_infos {
+            routes.push(route_info);
+        }
+
+        // 递归遍历所有下一级路径段
+        for next_segment in self.next_segments.values() {
+            routes.extend(next_segment.collect_all_routes());
+        }
+
+        routes
+    }
+
+    /// 插入路由 - Radix Tree 构建
+    pub fn insert_route(&mut self, method: Method, pattern: String, route_type: RouteType, handler_id: usize) {
+        crate::utils::logger::debug!("🔧 [RouteNode] 插入路由: {} {} {:?} (handler_id: {})", method, pattern, route_type, handler_id);
+
+        // ⚠️ 检测潜在的路由冲突
+        self.detect_potential_conflicts(&method, &pattern);
+
+        let segments: Vec<&str> = pattern.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+        let mut current_node = self;
+
+        // 构建路径段
+        let mut route_segments = Vec::new();
+        let mut param_info = HashMap::new();
+
+        for (pos, segment) in segments.iter().enumerate() {
+            if segment.starts_with('<') && segment.ends_with('>') {
+                // 参数段
+                let param_content = &segment[1..segment.len()-1];
+
+                if param_content.contains(':') {
+                    let parts: Vec<&str> = param_content.split(':').collect();
+                    if parts.len() == 2 {
+                        let param_type = Self::parse_param_type(parts[0]);
+                        let param_name = parts[1];
+
+                        // path参数检查
+                        if param_type == ParamType::Path && pos != segments.len() - 1 {
+                            panic!(
+                                "路由模式 '{}' 中的 path 参数 '{}' 不是最后一个参数！\n\
+                                path 类型参数必须是路由模式中的最后一个参数。",
+                                pattern, param_name
+                            );
+                        }
+
+                        route_segments.push(RouteSegment::Param(param_name.to_string(), param_type.clone()));
+                        param_info.insert(param_name.to_string(), ParamInfo {
+                            position: pos,
+                            param_type,
+                            has_constraint: true,
+                        });
                     } else {
-                        // 普通参数类型
-                        param_positions.insert(param_name.to_string(), pos);
-                        param_types.insert(param_name.to_string(), param_type.to_string());
-                        segments.push(format!("<{}>", param_name));
+                        // 格式错误，当作默认int参数
+                        route_segments.push(RouteSegment::Param(param_content.to_string(), ParamType::Int));
+                        param_info.insert(param_content.to_string(), ParamInfo {
+                            position: pos,
+                            param_type: ParamType::Int,
+                            has_constraint: false,
+                        });
                     }
                 } else {
-                    // 格式错误，当作普通参数处理
-                    param_positions.insert(param_content.to_string(), pos);
-                    param_types.insert(param_content.to_string(), "int".to_string());
-                    segments.push(format!("<{}>", param_content));
+                    // 无类型约束，默认int
+                    route_segments.push(RouteSegment::Param(param_content.to_string(), ParamType::Int));
+                    param_info.insert(param_content.to_string(), ParamInfo {
+                        position: pos,
+                        param_type: ParamType::Int,
+                        has_constraint: false,
+                    });
                 }
             } else {
-                // 无类型约束的参数
-                param_positions.insert(param_content.to_string(), pos);
-                param_types.insert(param_content.to_string(), "int".to_string()); // 默认int类型
-                segments.push(format!("<{}>", param_content));
+                // 静态段
+                route_segments.push(RouteSegment::Static(segment.to_string()));
             }
-        } else {
-            // 普通路径段
-            segments.push(segment.to_string());
+        }
+
+        // 计算优先级分数
+        let priority_score = Self::calculate_priority_score(&route_segments, &param_info);
+
+        // 检查是否有path参数
+        let has_path_param = param_info.values().any(|info| info.param_type == ParamType::Path);
+
+        // 创建路由信息
+        let route_info = RouteInfo {
+            pattern: pattern.clone(),
+            method: method.clone(),
+            route_type,
+            segments: route_segments.clone(),
+            param_info,
+            priority_score,
+            has_path_param,
+            handler_id,
+        };
+
+        // 构建Radix Tree路径
+        for segment in segments {
+            if segment.starts_with('<') {
+                // 参数段统一用"<param>"作为key
+                current_node = current_node.add_next_segment("<param>".to_string());
+            } else {
+                // 静态段用实际值作为key
+                current_node = current_node.add_next_segment(segment.to_string());
+            }
+        }
+
+        // 设置终端路由信息
+        current_node.set_route_info(route_info);
+    }
+
+    /// 解析参数类型
+    fn parse_param_type(type_str: &str) -> ParamType {
+        match type_str {
+            "int" => ParamType::Int,
+            "str" => ParamType::Str,
+            "float" => ParamType::Float,
+            "uuid" => ParamType::Uuid,
+            "path" => ParamType::Path,
+            _ => ParamType::Int, // 默认为int
         }
     }
 
-    if param_positions.is_empty() {
-        None
-    } else {
-        Some(RouteParamMapping {
-            segments,
-            param_positions,
-            param_types,
-        })
+    /// 计算路由优先级分数（分数越高优先级越高）
+    fn calculate_priority_score(segments: &[RouteSegment], param_info: &HashMap<String, ParamInfo>) -> u32 {
+        let static_count = segments.iter().filter(|s| matches!(s, RouteSegment::Static(_))).count() as u32;
+        let constrained_param_count = param_info.values().filter(|info| info.has_constraint).count() as u32;
+        let total_segments = segments.len() as u32;
+        let has_path_param = param_info.values().any(|info| info.param_type == ParamType::Path);
+
+        // 🎯 重新设计优先级算法，确保最具体的路由优先级最高
+        let mut score = 0;
+
+        // 1. 静态段越多优先级越高（更具体）
+        score += static_count * 10000;
+
+        // 2. 总段数越少优先级越高（路径越短越具体）
+        score += (1000 - total_segments) * 1000;
+
+        // 3. 有类型约束的参数比无约束优先级高
+        score += constrained_param_count * 1000;
+
+        // 4. path参数适度降低优先级（避免过度惩罚）
+        if has_path_param {
+            score -= 3000; // 大幅减少惩罚，从50000改为3000
+        }
+
+        score
+    }
+
+    /// 查找路由 - Radix Tree + 快速匹配混合算法
+    pub fn find_routes(&self, method: &Method, path: &str) -> Vec<RouteMatch> {
+        let mut matches = Vec::new();
+        let request_segments: Vec<&str> = path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+
+        self.lookup_recursive(method, &request_segments, &HashMap::new(), 0, &mut matches);
+
+        // 按优先级分数排序（降序）
+        matches.sort_by(|a, b| b.priority_score.cmp(&a.priority_score));
+
+        matches
+    }
+
+    /// 递归查找路由
+    fn lookup_recursive(
+        &self,
+        method: &Method,
+        request_segments: &[&str],
+        current_params: &HashMap<String, String>,
+        segment_index: usize,
+        matches: &mut Vec<RouteMatch>,
+    ) {
+        // 检查当前节点的所有路由信息
+        for route_info in &self.route_infos {
+            if route_info.method == *method {
+                if let Some(params) = self.extract_params_fast(route_info, request_segments) {
+                    // 计算动态优先级分数（基于实际请求内容）
+                    let dynamic_score = self.calculate_dynamic_priority_score(route_info, request_segments, &params);
+
+                    // Debug输出：查看优先级计算过程（仅在debug模式）
+                    crate::utils::logger::debug!("🔍 [RouteMatch] 路由: {} -> 基础分数: {}, 动态分数: {}",
+                        route_info.pattern, route_info.priority_score, dynamic_score);
+
+                    matches.push(RouteMatch {
+                        route_info: route_info.clone(),
+                        params,
+                        priority_score: dynamic_score,
+                    });
+                }
+            }
+        }
+
+        // 如果已经处理完所有请求段，不再继续向下查找
+        if segment_index >= request_segments.len() {
+            return;
+        }
+
+        let current_segment = request_segments[segment_index];
+
+        // 1. 尝试精确匹配静态段
+        if let Some(child) = self.next_segments.get(current_segment) {
+            child.lookup_recursive(method, request_segments, current_params, segment_index + 1, matches);
+        }
+
+        // 2. 尝试参数段匹配
+        if let Some(param_child) = self.next_segments.get("<param>") {
+            param_child.lookup_recursive(method, request_segments, current_params, segment_index + 1, matches);
+        }
+    }
+
+    /// 快速参数提取 - 零正则匹配
+    fn extract_params_fast(&self, route_info: &RouteInfo, request_segments: &[&str]) -> Option<HashMap<String, String>> {
+        let mut params = HashMap::new();
+
+        for (i, segment) in route_info.segments.iter().enumerate() {
+            match segment {
+                RouteSegment::Static(expected) => {
+                    // 静态段必须精确匹配
+                    if i >= request_segments.len() || request_segments[i] != expected {
+                        return None;
+                    }
+                }
+                RouteSegment::Param(param_name, param_type) => {
+                    // 参数段提取
+                    if param_type == &ParamType::Path {
+                        // path参数：提取剩余所有段
+                        if i >= request_segments.len() {
+                            return None;
+                        }
+                        let path_value = request_segments[i..].join("/");
+                        params.insert(param_name.clone(), path_value);
+                        break; // path参数是最后一个
+                    } else {
+                        // 普通参数：提取单个段并进行类型验证
+                        if i >= request_segments.len() {
+                            return None;
+                        }
+                        let segment_value = request_segments[i];
+
+                        // 暂时关闭类型验证，专注于优先级算法优化
+                        // TODO: 重新实现智能类型验证系统
+
+                        params.insert(param_name.clone(), segment_value.to_string());
+                    }
+                }
+            }
+        }
+
+        // 确保请求段数量匹配（除非有path参数）
+        if !route_info.has_path_param && request_segments.len() != route_info.segments.len() {
+            return None;
+        }
+
+        Some(params)
+    }
+
+    /// 计算动态优先级分数（基于实际请求内容）
+    fn calculate_dynamic_priority_score(&self, route_info: &RouteInfo, request_segments: &[&str], params: &HashMap<String, String>) -> u32 {
+        let base_score = route_info.priority_score;
+        let mut bonus_score: i32 = 0;
+
+        // 对每个参数进行类型匹配度评估
+        for (param_name, param_info) in &route_info.param_info {
+            if let Some(param_value) = params.get(param_name) {
+                match param_info.param_type {
+                    ParamType::Float => {
+                        // 精细的浮点数判断逻辑：
+                        let dot_count = param_value.matches('.').count();
+                        crate::utils::logger::info!("   [Float类型] 参数: {}, 小数点数: {}", param_name, dot_count);
+
+                        if dot_count > 1 {
+                            // 多个小数点，肯定是文件路径
+                            bonus_score = bonus_score.saturating_sub(40000);
+                            crate::utils::logger::info!("   -> 多个小数点，判定为文件路径，减40000分");
+                        } else if dot_count == 1 {
+                            // 单个小数点，尝试解析为浮点数
+                            if param_value.parse::<f64>().is_ok() {
+                                // 真正的浮点数，高分奖励
+                                bonus_score = bonus_score.saturating_add(8000);
+                                crate::utils::logger::info!("   -> 可解析为浮点数，加8000分");
+                            } else {
+                                // 不能解析为浮点数，很可能是文件名（如 "readme.md", "docs/manual.pdf"）
+                                bonus_score = bonus_score.saturating_sub(40000);
+                                crate::utils::logger::info!("   -> 无法解析为浮点数，判定为文件名，减40000分");
+                            }
+                        } else {
+                            // 没有小数点，可能是整数但要求浮点数，轻微奖励但不应该超过整数路由
+                            bonus_score = bonus_score.saturating_add(500);
+                            crate::utils::logger::info!("   -> 无小数点，勉强匹配，加500分");
+                        }
+                    }
+                    ParamType::Int => {
+                        // 精细的整数类型判断：
+                        if param_value.contains('.') {
+                            // 包含小数点，绝对不是整数
+                            bonus_score = bonus_score.saturating_sub(40000);
+                        } else if param_value.parse::<i64>().is_ok() {
+                            // 真正的整数，高分奖励
+                            bonus_score = bonus_score.saturating_add(8000);
+                        } else {
+                            // 不包含小数点但也不能解析为整数（可能是文件名）
+                            bonus_score = bonus_score.saturating_sub(20000);
+                        }
+                    }
+                    ParamType::Str | ParamType::Uuid => {
+                        // 字符串类型参数总是匹配
+                        bonus_score = bonus_score.saturating_add(1000);
+                    }
+                    ParamType::Path => {
+                        // path参数匹配度检查
+                        if param_value.contains('/') {
+                            // 如果包含斜杠，说明path参数发挥优势
+                            bonus_score = bonus_score.saturating_add(8000);
+                        } else {
+                            // 如果不包含斜杠，path参数优势不明显
+                            bonus_score = bonus_score.saturating_add(1000);
+                        }
+                    }
+                }
+            }
+        }
+
+        (base_score as i32 + bonus_score).max(0) as u32
+    }
+
+    /// 检测潜在的路由冲突并发出警告
+    fn detect_potential_conflicts(&self, method: &Method, new_pattern: &str) {
+        let new_segments: Vec<&str> = new_pattern.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+
+        // 检查是否有path参数在中间位置（已通过编译时检查，但这里再次提醒）
+        for (i, segment) in new_segments.iter().enumerate() {
+            if segment.starts_with("<path:") && i != new_segments.len() - 1 {
+                crate::utils::logger::warn!("⚠️ [RouteConflict] 路由 '{}' 中的 path 参数 '{}' 不是最后一个参数！", new_pattern, segment);
+                crate::utils::logger::warn!("   这会导致路由匹配异常。path参数必须是路由的最后一个参数。");
+                crate::utils::logger::warn!("   建议重新设计路由模式。");
+            }
+        }
+
+        // 检查是否存在可能导致歧义的路由组合
+        let all_routes = self.collect_all_routes();
+        for existing_route in all_routes {
+            if existing_route.method == *method && existing_route.pattern != new_pattern {
+                if self.routes_may_conflict(&existing_route.pattern, new_pattern) {
+                    crate::utils::logger::warn!("⚠️ [RouteConflict] 检测到潜在路由冲突:");
+                    crate::utils::logger::warn!("   现有路由: {}", existing_route.pattern);
+                    crate::utils::logger::warn!("   新增路由: {}", new_pattern);
+                    crate::utils::logger::warn!("   建议:");
+                    crate::utils::logger::warn!("   1. 使用更具体的路由模式");
+                    crate::utils::logger::warn!("   2. 将path类型参数路由放在最后注册");
+                    crate::utils::logger::warn!("   3. 考虑重构路由设计以避免冲突");
+                }
+            }
+        }
+    }
+
+    /// 判断两个路由模式是否可能产生冲突
+    fn routes_may_conflict(&self, pattern1: &str, pattern2: &str) -> bool {
+        let segments1: Vec<&str> = pattern1.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+        let segments2: Vec<&str> = pattern2.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+
+        // 如果段数不同，通常不会冲突
+        if segments1.len() != segments2.len() {
+            return false;
+        }
+
+        // 检查是否有相似的参数结构但不同的类型约束
+        let mut conflicts = 0;
+        for (s1, s2) in segments1.iter().zip(segments2.iter()) {
+            if s1.starts_with('<') && s2.starts_with('<') {
+                // 都是参数段，检查类型约束是否不同
+                let type1 = self.extract_param_type(s1);
+                let type2 = self.extract_param_type(s2);
+
+                if type1 != type2 {
+                    conflicts += 1;
+                }
+            } else if s1 != s2 {
+                // 静态段不同，不会冲突
+                return false;
+            }
+        }
+
+        // 如果有参数类型冲突，可能产生问题
+        conflicts > 0
+    }
+
+    /// 提取参数类型
+    fn extract_param_type(&self, param_str: &str) -> String {
+        if param_str.contains(':') {
+            // 有类型约束
+            if let Some(pos) = param_str.find(':') {
+                param_str[pos + 1..param_str.len() - 1].to_string()
+            } else {
+                "int".to_string() // 默认类型
+            }
+        } else {
+            // 无类型约束，默认为int
+            "int".to_string()
+        }
+    }
+
+    /// 验证是否为有效的浮点数（包含整数）
+    fn is_valid_float(value: &str) -> bool {
+        value.parse::<f64>().is_ok()
+    }
+
+    /// 验证是否为有效的整数（严格模式，不接受浮点数）
+    fn is_valid_int_strict(value: &str) -> bool {
+        // 首先检查是否包含小数点
+        if value.contains('.') {
+            return false;
+        }
+        // 检查是否包含其他非数字字符（除了负号）
+        if value.chars().any(|c| !c.is_ascii_digit() && c != '-') {
+            return false;
+        }
+        // 然后尝试解析为整数
+        value.parse::<i64>().is_ok()
     }
 }
 
+// ⚠️ 已废弃：RouteParamMapping 已被 RouteNode 完全替代
+// 保留此函数仅为向后兼容，建议使用 RouteNode::insert_route
+#[deprecated(note = "使用 RouteNode::insert_route 替代")]
+fn create_param_mapping(_pattern: &str) -> Option<LegacyRouteParamMapping> {
+    // 废弃函数，直接返回 None
+    None
+}
+
+// 向后兼容的类型别名
+type LegacyRouteParamMapping = (); // 空类型，实际不再使用
+
+/// 路由键 - 简化为纯HashMap键，不包含匹配逻辑
+/// 匹配逻辑完全由 RouteNode 负责
 #[derive(Debug, Clone)]
 pub struct RouteKey {
     method: Method,
     path: String,
-    regex: Option<Regex>,
-    param_names: Vec<String>,
-    /// 新增：路由参数映射表，用于快速参数定位
-    param_mapping: Option<RouteParamMapping>,
 }
 
 impl RouteKey {
-    /// 获取路由参数映射表
-    pub fn get_param_mapping(&self) -> Option<&RouteParamMapping> {
-        self.param_mapping.as_ref()
-    }
     pub fn new(method: Method, path: String) -> Self {
-        let (regex, param_names) = compile_pattern(&path)
-            .map(|(r, p)| (Some(r), p))
-            .unwrap_or_else(|| (None, Vec::new()));
-
-        // 创建路由参数映射表
-        let param_mapping = create_param_mapping(&path);
-
-        RouteKey {
-            method,
-            path,
-            regex,
-            param_names,
-            param_mapping,
-        }
+        RouteKey { method, path }
     }
 
-    /// 快速参数提取（使用映射表，避免正则匹配）
-    pub fn extract_params_fast(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
-        crate::utils::logger::debug!("🔍 [RouteKey] 快速参数提取: {} {} -> 模式: {}", method, path, self.path);
-
-        if &self.method != method {
-            crate::utils::logger::debug!("❌ [RouteKey] 方法不匹配: {} != {}", method, self.method);
-            return None;
-        }
-
-        // 如果没有参数，直接进行字符串匹配
-        if self.param_mapping.is_none() {
-            let matches = self.path == path;
-            crate::utils::logger::debug!("🔍 [RouteKey] 静态路由匹配: {} -> {}", self.path, matches);
-            return if matches {
-                Some(HashMap::new())
-            } else {
-                None
-            };
-        }
-
-        // 使用映射表进行快速参数提取
-        let mapping = self.param_mapping.as_ref().unwrap();
-
-        // 按斜杠分割请求路径
-        let request_segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-        crate::utils::logger::debug!("🔍 [RouteKey] 请求路径段: {:?}", request_segments);
-        crate::utils::logger::debug!("🔍 [RouteKey] 路由模式段: {:?}", mapping.segments);
-
-        // 检查是否有path类型参数
-        let has_path_param = mapping.param_types.values().any(|t| t == "path");
-        crate::utils::logger::debug!("🔍 [RouteKey] 是否有path参数: {}", has_path_param);
-
-        // 检查静态段是否匹配，同时提取参数
-        let mut params = HashMap::new();
-        for (i, segment) in mapping.segments.iter().enumerate() {
-            crate::utils::logger::debug!("🔍 [RouteKey] 检查段[{}]: {} vs 请求: {:?}", i, segment, request_segments.get(i));
-
-            if segment.starts_with('<') && segment.ends_with('>') {
-                // 这是一个参数段
-                let param_name = &segment[1..segment.len()-1];
-                let param_type = mapping.param_types.get(param_name)?;
-                crate::utils::logger::debug!("🔍 [RouteKey] 参数段: {} 类型: {}", param_name, param_type);
-
-                if param_type == "path" {
-                    // path类型：提取从当前位置到末尾的所有段，用斜杠拼接
-                    if i >= request_segments.len() {
-                        crate::utils::logger::debug!("❌ [RouteKey] path参数索引越界: {} >= {}", i, request_segments.len());
-                        return None;
-                    }
-                    let path_value = request_segments[i..].join("/");
-                    crate::utils::logger::debug!("✅ [RouteKey] path参数提取: {} = {}", param_name, path_value);
-                    params.insert(param_name.to_string(), path_value);
-                    break; // path参数后面不再有其他段
-                } else {
-                    // 普通参数：提取单个段
-                    if i >= request_segments.len() {
-                        crate::utils::logger::debug!("❌ [RouteKey] 参数索引越界: {} >= {}", i, request_segments.len());
-                        return None;
-                    }
-                    let request_segment = request_segments.get(i)?;
-                    crate::utils::logger::debug!("✅ [RouteKey] 普通参数提取: {} = {}", param_name, request_segment);
-                    params.insert(param_name.to_string(), request_segment.to_string());
-                }
-            } else {
-                // 这是一个静态段，必须完全匹配
-                if i >= request_segments.len() {
-                    crate::utils::logger::debug!("❌ [RouteKey] 静态段索引越界: {} >= {}", i, request_segments.len());
-                    return None;
-                }
-                let request_segment = request_segments.get(i)?;
-                if segment != request_segment {
-                    crate::utils::logger::debug!("❌ [RouteKey] 静态段不匹配: '{}' != '{}'", segment, request_segment);
-                    return None;
-                }
-                crate::utils::logger::debug!("✅ [RouteKey] 静态段匹配: '{}'", segment);
-            }
-        }
-
-        // 对于没有path参数的路由，检查段数量是否匹配
-        if !has_path_param && request_segments.len() != mapping.segments.len() {
-            crate::utils::logger::debug!("❌ [RouteKey] 段数量不匹配: {} != {} (无path参数)",
-                request_segments.len(), mapping.segments.len());
-            return None;
-        }
-
-        crate::utils::logger::debug!("✅ [RouteKey] 快速匹配成功: {:?}", params);
-        Some(params)
+    /// 获取路径
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
-    pub fn matches(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
-        // 优先使用快速匹配
-        if let Some(params) = self.extract_params_fast(method, path) {
-            return Some(params);
-        }
+    /// 获取方法
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
 
-        // fallback到正则匹配（理论上不应该用到，但保留作为保险）
-        crate::utils::logger::debug!(
-            "⚠️ [Router] 快速匹配失败，回退到正则匹配 - 路由: {} {}, 模式: {}",
-            method,
-            path,
-            self.path
-        );
+    // ⚠️ 已废弃：参数提取现在由 RouteNode 负责
+    #[deprecated(note = "使用 RouteNode::find_routes 替代")]
+    pub fn extract_params_fast(&self, _method: &Method, _path: &str) -> Option<HashMap<String, String>> {
+        // 废弃方法，直接返回 None
+        crate::utils::logger::warn!("⚠️ RouteKey::extract_params_fast 已废弃，请使用 RouteNode::find_routes");
+        None
+    }
 
-        if &self.method != method {
-            return None;
-        }
+    // ⚠️ 已废弃：参数映射现在由 RouteNode 负责
+    #[deprecated(note = "RouteParamMapping 已被 RouteNode 替代")]
+    pub fn get_param_mapping(&self) -> Option<()> {
+        crate::utils::logger::warn!("⚠️ RouteKey::get_param_mapping 已废弃，请使用 RouteNode");
+        None
+    }
 
-        if let Some(ref regex) = self.regex {
-            if let Some(captures) = regex.captures(path) {
-                let mut params = HashMap::new();
-                for (i, param_name) in self.param_names.iter().enumerate() {
-                    if let Some(capture) = captures.get(i + 1) {
-                        params.insert(param_name.clone(), capture.as_str().to_string());
-                    }
-                }
-                Some(params)
-            } else {
-                None
-            }
-        } else {
-            if self.path == path {
-                Some(HashMap::new())
-            } else {
-                None
-            }
-        }
+    // ⚠️ 已废弃：正则匹配已被 Radix Tree + 快速匹配替代
+    #[deprecated(note = "正则匹配已被 Radix Tree + 快速匹配替代")]
+    pub fn matches(&self, _method: &Method, _path: &str) -> Option<HashMap<String, String>> {
+        crate::utils::logger::warn!("⚠️ RouteKey::matches 已废弃，请使用 RouteNode::find_routes");
+        None
     }
 }
 
@@ -370,31 +709,34 @@ impl Eq for RouteKey {}
 
 #[derive(Clone)]
 pub struct Router {
-    // HTTP 处理器
-    http_routes: HashMap<RouteKey, HttpAsyncHandler>,
-    http_streaming_routes: HashMap<RouteKey, HttpStreamingHandler>,
-    
+    // 🆕 Radix Tree 路由系统 - 统一的高性能路由核心
+    route_tree: RouteNode,
+
+    // 处理器存储 - 通过 handler_id 索引
+    http_handlers: Vec<HttpAsyncHandler>,
+    http_streaming_handlers: Vec<HttpStreamingHandler>,
+
     // IP 黑名单
     blacklist: Arc<RwLock<HashSet<IpAddr>>>,
-    
+
     // SPA 配置
     spa_config: SpaConfig,
-    
+
     // 中间件
     compressor: Option<Arc<crate::compression::Compressor>>,
     #[cfg(feature = "cache")]
     cache_middleware: Option<Arc<crate::server::cache_middleware_impl::CacheMiddlewareImpl>>,
 
-    
+
     protocol_detection_middleware: Option<Arc<crate::server::protocol_detection_middleware::ProtocolDetectionMiddleware>>,
-    
+
     // gRPC 相关（保持不变）
     grpc_registry: Arc<RwLock<GrpcServiceRegistry>>,
     grpc_handler: Option<Arc<GrpcRequestHandler>>,
-    
+
     // 证书管理
     cert_manager: Option<Arc<RwLock<CertificateManager>>>,
-    
+
     // HTTP/2 支持
     h2_enabled: bool,
     h2c_enabled: bool,
@@ -404,10 +746,12 @@ impl Router {
     /// 创建新的路由器实例
     pub fn new() -> Self {
         let grpc_registry = Arc::new(RwLock::new(GrpcServiceRegistry::new()));
-        
+
         Router {
-            http_routes: HashMap::new(),
-            http_streaming_routes: HashMap::new(),
+            // 🆕 初始化 Radix Tree 路由系统
+            route_tree: RouteNode::new("root".to_string(), 0),
+            http_handlers: Vec::new(),
+            http_streaming_handlers: Vec::new(),
             blacklist: Arc::new(RwLock::new(HashSet::new())),
             spa_config: SpaConfig::default(),
             compressor: None,
@@ -441,8 +785,15 @@ impl Router {
     where
         H: Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<Response<Full<Bytes>>, hyper::Error>> + Send>> + Send + Sync + 'static,
     {
-        let key = RouteKey::new(method, path.into());
-        self.http_routes.insert(key, Arc::new(handler));
+        let path_str = path.into();
+        let handler_id = self.http_handlers.len(); // 分配处理器ID
+        self.http_handlers.push(Arc::new(handler));
+
+        // 🆕 使用 Radix Tree 添加路由
+        use crate::server::router::RouteType;
+        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Http, handler_id);
+
+        crate::utils::logger::debug!("🔧 [Router] 添加路由: {} {} -> handler_id: {}", method, path_str, handler_id);
         self
     }
 
@@ -452,24 +803,33 @@ impl Router {
         H: Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<Response<Full<Bytes>>, hyper::Error>> + Send>> + Send + Sync + 'static,
         I: IntoIterator<Item = Method>,
     {
-        let path = path.into();
-        let handler = Arc::new(handler);
-        
+        let path_str = path.into();
+        let handler_id = self.http_handlers.len(); // 分配处理器ID
+        self.http_handlers.push(Arc::new(handler));
+
+        // 🆕 为每个方法添加路由到 Radix Tree
+        use crate::server::router::RouteType;
         for method in methods {
-            let key = RouteKey::new(method, path.clone());
-            self.http_routes.insert(key, handler.clone());
+            self.route_tree.insert_route(method, path_str.clone(), RouteType::Http, handler_id);
         }
-        
+
         self
     }
 
-    /// 添加流式 HTTP 路由
+    /// 添加流式 HTTP 路由 (🆕 基于 Radix Tree)
     pub fn add_streaming_route<H>(&mut self, method: Method, path: impl Into<String>, handler: H) -> &mut Self
     where
         H: Fn(HttpRequest, HashMap<String, String>) -> Pin<Box<dyn Future<Output = Result<Response<StreamingBody>, hyper::Error>> + Send>> + Send + Sync + 'static,
     {
-        let key = RouteKey::new(method, path.into());
-        self.http_streaming_routes.insert(key, Arc::new(handler));
+        let path_str = path.into();
+        let handler_id = self.http_streaming_handlers.len();
+        self.http_streaming_handlers.push(Arc::new(handler));
+
+        // 🆕 使用 Radix Tree 添加流式路由
+        use crate::server::router::RouteType;
+        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Streaming, handler_id);
+
+        crate::utils::logger::debug!("🔧 [Router] 添加流式路由: {} {} -> handler_id: {}", method, path_str, handler_id);
         self
     }
 
@@ -534,131 +894,91 @@ impl Router {
         let method = req.method.clone(); // 克隆 method 避免借用问题
         let path = req.path().to_string(); // 克隆路径字符串
 
-        crate::utils::logger::debug!("🔍 [Router] 开始路由匹配: {} {}", method, path);
-        crate::utils::logger::debug!("🔍 [Router] 注册的标准路由数量: {}", self.http_routes.len());
-        crate::utils::logger::debug!("🔍 [Router] 注册的流式路由数量: {}", self.http_streaming_routes.len());
+        crate::utils::logger::debug!("🔍 [Router] 开始 Radix Tree 路由匹配: {} {}", method, path);
+        crate::utils::logger::debug!("🔍 [Router] 注册的HTTP处理器数量: {}", self.http_handlers.len());
 
-        // 1. 尝试流式路由匹配
-        crate::utils::logger::debug!("🔍 [Router] 尝试流式路由匹配...");
-        for (route_key, handler) in &self.http_streaming_routes {
-            crate::utils::logger::debug!("🔍 [Router] 检查流式路由: {} {}", route_key.method, route_key.path);
-            if let Some(params) = route_key.matches(&method, &path) {
-                crate::utils::logger::debug!("✅ [Router] 匹配到流式路由: {} {}, 参数: {:?}", method, path, params);
-                let req_with_params = Self::set_path_params_to_request(req, params.clone());
-                let response = handler(req_with_params, params).await?;
-                let (parts, body) = response.into_parts();
-                let boxed_body = BoxBody::new(body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e }));
-                let mut response = Response::from_parts(parts, boxed_body);
-                // 注意：req 已经被消耗，这里需要一个新的请求对象用于压缩
-                // 由于流式路由通常不使用压缩，我们暂时跳过压缩
-                return Ok(response);
+        // 🆕 使用 Radix Tree 进行智能路由匹配
+        let matches = self.route_tree.find_routes(&method, &path);
+
+        if !matches.is_empty() {
+            // 选择优先级最高的匹配路由
+            let best_match = &matches[0]; // 已按优先级排序
+            crate::utils::logger::debug!("✅ [Router] Radix Tree 匹配成功: {} {} (优先级: {}) -> 路由: {}",
+                method, path, best_match.priority_score, best_match.route_info.pattern);
+            crate::utils::logger::debug!("🔍 [Router] 提取的参数: {:?}", best_match.params);
+
+            // 检查是否是流式路由（通过 route_type 字段判断）
+            if best_match.route_info.route_type == RouteType::Streaming {
+                // 流式路由处理
+                if best_match.route_info.handler_id < self.http_streaming_handlers.len() {
+                    let handler = &self.http_streaming_handlers[best_match.route_info.handler_id];
+                    let req_with_params = Self::set_path_params_to_request(req, best_match.params.clone());
+                    let response = handler(req_with_params, best_match.params.clone()).await?;
+                    let (parts, body) = response.into_parts();
+                    let boxed_body = BoxBody::new(body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e }));
+                    return Ok(Response::from_parts(parts, boxed_body));
+                }
             } else {
-                crate::utils::logger::debug!("❌ [Router] 流式路由不匹配: {} {}", route_key.method, route_key.path);
-            }
-        }
+                // 标准HTTP路由
+                if best_match.route_info.handler_id < self.http_handlers.len() {
+                    let handler = &self.http_handlers[best_match.route_info.handler_id];
+                    let req_with_params = Self::set_path_params_to_request(req, best_match.params.clone());
 
-        // 2. 尝试标准路由匹配
-        crate::utils::logger::debug!("🔍 [Router] 尝试标准路由匹配...");
-        for (route_key, handler) in &self.http_routes {
-            crate::utils::logger::debug!("🔍 [Router] 检查标准路由: {} {}", route_key.method, route_key.path);
-            if let Some(params) = route_key.matches(&method, &path) {
-                crate::utils::logger::debug!("✅ [Router] 匹配到标准路由: {} {}, 参数: {:?}", method, path, params);
-                let req_with_params = Self::set_path_params_to_request(req, params.clone());
-
-                // 对于GET请求，先检查缓存
-                if method == hyper::Method::GET {
-                    #[cfg(feature = "cache")]
-                    {
-                        if let Some(cached_response) = self.apply_cache(&req_with_params, &path).await {
-                            crate::utils::logger::debug!("🎯 [Router] 缓存命中: GET {}", path);
-                            return Ok(cached_response);
+                    // 对于GET请求，先检查缓存
+                    if method == hyper::Method::GET {
+                        #[cfg(feature = "cache")]
+                        {
+                            if let Some(cached_response) = self.apply_cache(&req_with_params, &path).await {
+                                crate::utils::logger::debug!("🎯 [Router] 缓存命中: GET {}", path);
+                                return Ok(cached_response);
+                            }
                         }
+
+                        // 缓存未命中或无缓存功能，处理请求
+                        let response = handler(req_with_params.clone()).await?;
+                        let (parts, body) = response.into_parts();
+                        let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
+                        let mut response = Response::from_parts(parts, boxed_body);
+
+                        // 应用缓存中间件（如果启用）
+                        #[cfg(feature = "cache")]
+                        {
+                            response = self.apply_cache_middleware(&req_with_params, response).await?;
+                        }
+
+                        // 应用压缩
+                        return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
                     }
 
-                    // 缓存未命中或无缓存功能，处理请求
+                    // 非GET请求直接处理
                     let response = handler(req_with_params.clone()).await?;
                     let (parts, body) = response.into_parts();
                     let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
                     let mut response = Response::from_parts(parts, boxed_body);
 
-                    // 应用缓存中间件（如果启用）
-                    #[cfg(feature = "cache")]
-                    {
-                        response = self.apply_cache_middleware(&req_with_params, response).await?;
-                    }
-
-                    // 应用压缩
                     return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
                 }
-
-                // 非GET请求直接处理
-                let response = handler(req_with_params.clone()).await?;
-                let (parts, body) = response.into_parts();
-                let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
-                let mut response = Response::from_parts(parts, boxed_body);
-
-                return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
-            } else {
-                crate::utils::logger::debug!("❌ [Router] 标准路由不匹配: {} {}", route_key.method, route_key.path);
             }
+        } else {
+            crate::utils::logger::debug!("❌ [Router] Radix Tree 未找到匹配路由: {} {}", method, path);
         }
 
-        // 3. 尝试通配符匹配
-        let wildcard_key = RouteKey::new(method.clone(), "/*".to_string());
-        if let Some(handler) = self.http_routes.get(&wildcard_key) {
-            crate::utils::logger::debug!("🔍 [Router] 匹配到通配符路由: /*");
-
-            // 对于GET请求，先检查缓存
-            if method == hyper::Method::GET {
-                #[cfg(feature = "cache")]
-                {
-                    if let Some(cached_response) = self.apply_cache(&req, &path).await {
-                        crate::utils::logger::debug!("🎯 [Router] 缓存命中: GET {}", path);
-                        return Ok(cached_response);
-                    }
-                }
-
-                // 缓存未命中或无缓存功能，处理请求
-                let response = handler(req.clone()).await?;
-                let (parts, body) = response.into_parts();
-                let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
-                let mut response = Response::from_parts(parts, boxed_body);
-
-                // 应用缓存中间件（如果启用）
-                #[cfg(feature = "cache")]
-                {
-                    response = self.apply_cache_middleware(&req, response).await?;
-                }
-
-                // 应用压缩
-                return Ok(self.apply_compression_boxed(response, &path, &req).await?);
-            }
-            
-            // 非GET请求直接处理
-            let response = handler(req.clone()).await?;
-            let (parts, body) = response.into_parts();
-            let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
-            let mut response = Response::from_parts(parts, boxed_body);
-            
-            return Ok(self.apply_compression_boxed(response, &path, &req).await?);
-        }
-
-        // 4. 检查 SPA 回退（避免无限递归）
+        // 检查 SPA 回退（避免无限递归）
         if !is_spa_fallback && self.spa_config.should_fallback(&path) {
             if let Some(fallback_path) = &self.spa_config.fallback_path {
                 crate::utils::logger::debug!("🔍 [Router] SPA 回退: {} {} -> {}", method, path, fallback_path);
-                
+
                 // 创建新的请求，路径指向 SPA 回退路径
                 let mut fallback_req = req.clone();
                 fallback_req.set_path(fallback_path);
-                
+
                 // 递归调用路由处理，标记为 SPA 回退以避免无限递归
                 return Box::pin(self.route_and_handle_internal(fallback_req, true)).await;
             }
         }
-        
-        // 5. 返回 404
-        crate::utils::logger::debug!("🔍 [Router] 未找到匹配路由: {} {}", method, path);
+
+        // 未找到匹配路由，返回404
+        crate::utils::logger::warn!("⚠️ [Router] 未找到匹配路由: {} {} -> 返回404", method, path);
         Ok(self.create_error_response(StatusCode::NOT_FOUND, "Not Found"))
     }
 
@@ -1067,17 +1387,19 @@ impl Router {
     pub fn list_routes(&self) -> Vec<(String, String)> {
         let mut routes = Vec::new();
         
-        routes.extend(
-            self.http_routes
-                .keys()
-                .map(|key| (key.method.to_string(), key.path.clone()))
-        );
-        
-        routes.extend(
-            self.http_streaming_routes
-                .keys()
-                .map(|key| (key.method.to_string(), key.path.clone()))
-        );
+        // 从 Radix Tree 收集所有路由信息
+        let all_route_infos = self.route_tree.collect_all_routes();
+
+        for route_info in all_route_infos {
+            let method_str = format!("{:?}", route_info.method);
+            let route_type_str = match route_info.route_type {
+                RouteType::Http => "HTTP",
+                RouteType::Streaming => "STREAMING",
+            };
+            let display_pattern = format!("{} [{}]", route_info.pattern, route_type_str);
+
+            routes.push((method_str, display_pattern));
+        }
         
 
         

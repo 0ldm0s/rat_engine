@@ -152,6 +152,75 @@ def create_user(request):
 
 RAT Engine 支持强大的路径参数功能，包括类型约束和验证。
 
+### ⚠️ **重要设计原则**
+
+#### 🚨 避免路由冲突的最佳实践
+
+**1. 避免相似结构的路由组合**
+
+```python
+# ❌ 避免这种设计！容易产生冲突
+@app.json("/mixed/<int:user_id>/<str:category>/<float:price>")
+def handle_mixed_params(request_data):
+    # 期望: /mixed/123/electronics/299.99
+    pass
+
+@app.json("/mixed/<int:user_id>/<path:file_path>")
+def handle_mixed_file_path(request_data):
+    # 期望: /mixed/456/docs/manual.pdf
+    # 🚨 问题: docs/manual.pdf 可能被误判为浮点数参数
+    pass
+```
+
+**2. 如果必须使用相似路由，请遵循注册顺序原则**
+
+```python
+# ✅ 正确的注册顺序
+@app.json("/mixed/<int:user_id>/<str:category>/<float:price>")  # 先注册更具体的路由
+def handle_mixed_params(request_data):
+    pass
+
+@app.json("/mixed/<int:user_id>/<path:file_path>")  # 后注册更通用的路由
+def handle_mixed_file_path(request_data):
+    pass
+```
+
+**3. 使用更明确的路由设计**
+
+```python
+# ✅ 更好的设计 - 避免冲突
+@app.json("/api/products/<int:id>/price/<float:price>")
+def get_product_price(request_data):
+    # 专门的价格路由，明确且无冲突
+    pass
+
+@app.json("/api/products/<int:id>/files/<path:file_path>")
+def get_product_files(request_data):
+    # 专门的文件路由，明确且无冲突
+    pass
+
+@app.json("/api/mixed-data/<int:user_id>/<category>/<price>")
+def get_mixed_data(request_data):
+    # 使用通用参数，让应用层处理类型转换
+    pass
+```
+
+**4. 路由注册顺序影响**
+
+```python
+# ⚠️ 注意：后注册的路由在某些情况下会影响优先级
+# 建议按从具体到通用的顺序注册路由
+
+# 1. 最具体的路由（包含最多类型约束）
+app.add_route("/api/v1/users/<int:user_id>/profile/<str:section>", handler)
+
+# 2. 中等具体的路由
+app.add_route("/api/v1/users/<int:user_id>", handler)
+
+# 3. 最通用的路由（path参数等）
+app.add_route("/api/v1/<path:remaining_path>", handler)
+```
+
 ### 📋 支持的参数类型
 
 - `<param>` - 默认整数类型 (int)
@@ -252,6 +321,19 @@ def download_file(request_data, path_args):
 @app.json("/files/<path:file_path>/<ext>")
 def get_file_with_ext(request_data, path_args):
     # 这也会导致路由无法正确匹配！
+    pass
+
+# ❌ 避免易产生冲突的路由组合
+@app.json("/mixed/<int:user_id>/<str:category>/<float:price>")
+def handle_mixed_params(request_data):
+    pass
+
+@app.json("/mixed/<int:user_id>/<path:file_path>")
+def handle_mixed_file_path(request_data):
+    # 🚨 极端场景警告！
+    # 1. 两个路由都有相似的结构（整数参数开头）
+    # 2. 一个期望浮点数，一个期望路径
+    # 3. 可能导致 /mixed/123/docs/manual.pdf 匹配不明确
     pass
 ```
 

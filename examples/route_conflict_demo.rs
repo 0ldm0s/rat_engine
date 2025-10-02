@@ -32,6 +32,7 @@ async fn handle_int_user(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat_
     let path = req.path();
 
     let response_data = json!({
+        "route": "int_user",
         "type": "integer_parameter",
         "parameter_name": "id",
         "raw_value": req.param("id"),
@@ -56,6 +57,7 @@ async fn handle_uuid_user(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat
     let path = req.path();
 
     let response_data = json!({
+        "route": "uuid_user",
         "type": "string_parameter",
         "parameter_name": "id",
         "raw_value": user_uuid,
@@ -131,6 +133,7 @@ async fn handle_mixed_params(req: HttpRequest) -> Result<Response<Full<Bytes>>, 
     let path = req.path();
 
     let response_data = json!({
+        "route": "mixed_params",
         "type": "mixed_parameters",
         "parameters": {
             "user_id": {
