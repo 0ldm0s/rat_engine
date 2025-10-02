@@ -22,6 +22,9 @@ pub mod error;
 pub mod compression;
 pub mod cache;
 
+// 公共模块
+pub mod common;
+
 // 在库加载时确保 CryptoProvider 只安装一次
 lazy_static! {
     static ref _CRYPTO_PROVIDER_INIT: () = {
