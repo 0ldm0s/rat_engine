@@ -393,10 +393,6 @@ impl RouteNode {
                     // 计算动态优先级分数（基于实际请求内容）
                     let dynamic_score = self.calculate_dynamic_priority_score(route_info, request_segments, &params);
 
-                    // Debug输出：查看优先级计算过程（仅在debug模式）
-                    crate::utils::logger::debug!("🔍 [RouteMatch] 路由: {} -> 基础分数: {}, 动态分数: {}",
-                        route_info.pattern, route_info.priority_score, dynamic_score);
-
                     matches.push(RouteMatch {
                         route_info: route_info.clone(),
                         params,
@@ -482,27 +478,21 @@ impl RouteNode {
                     ParamType::Float => {
                         // 精细的浮点数判断逻辑：
                         let dot_count = param_value.matches('.').count();
-                        crate::utils::logger::info!("   [Float类型] 参数: {}, 小数点数: {}", param_name, dot_count);
-
                         if dot_count > 1 {
                             // 多个小数点，肯定是文件路径
                             bonus_score = bonus_score.saturating_sub(40000);
-                            crate::utils::logger::info!("   -> 多个小数点，判定为文件路径，减40000分");
                         } else if dot_count == 1 {
                             // 单个小数点，尝试解析为浮点数
                             if param_value.parse::<f64>().is_ok() {
                                 // 真正的浮点数，高分奖励
                                 bonus_score = bonus_score.saturating_add(8000);
-                                crate::utils::logger::info!("   -> 可解析为浮点数，加8000分");
                             } else {
                                 // 不能解析为浮点数，很可能是文件名（如 "readme.md", "docs/manual.pdf"）
                                 bonus_score = bonus_score.saturating_sub(40000);
-                                crate::utils::logger::info!("   -> 无法解析为浮点数，判定为文件名，减40000分");
                             }
                         } else {
                             // 没有小数点，可能是整数但要求浮点数，轻微奖励但不应该超过整数路由
                             bonus_score = bonus_score.saturating_add(500);
-                            crate::utils::logger::info!("   -> 无小数点，勉强匹配，加500分");
                         }
                     }
                     ParamType::Int => {
@@ -536,7 +526,9 @@ impl RouteNode {
             }
         }
 
-        (base_score as i32 + bonus_score).max(0) as u32
+        let final_score = (base_score as i32 + bonus_score).max(0) as u32;
+
+        final_score
     }
 
     /// 检测潜在的路由冲突并发出警告

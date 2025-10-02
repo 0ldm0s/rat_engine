@@ -418,21 +418,24 @@ async fn run_automated_tests() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // 执行测试用例
-    for (test_name, path) in test_cases {
+    for (test_name, path_desc) in test_cases {
         print!("  测试 {}: ", test_name);
 
-        match test_endpoint(&http_client, &format!("{}{}", base_url, path)).await {
+        // 提取实际路径（去掉描述信息）
+        let actual_path = path_desc.split(" - ").next().unwrap_or(path_desc);
+
+        match test_endpoint(&http_client, &format!("{}{}", base_url, actual_path)).await {
             Ok(response_data) => {
                 println!("✅ 通过");
                 test_results.push((test_name, true, None));
 
                 // 验证响应内容和冲突检测结果
-                if path != "/" {
+                if actual_path != "/" {
                     if let Ok(json_value) = serde_json::from_str::<Value>(&response_data) {
                         let route_matched = json_value.get("route").and_then(|v| v.as_str()).unwrap_or("unknown");
 
-                        if path.starts_with("/mixed/") {
-                            if path.contains("/docs/") || path.contains("/readme.md") {
+                        if actual_path.starts_with("/mixed/") {
+                            if actual_path.contains("/docs/") || actual_path.contains("/readme.md") {
                                 // 应该匹配 mixed_file_path
                                 if route_matched == "mixed_file_path" {
                                     println!("    ✅ 冲突测试通过: 正确匹配mixed_file_path路由");
@@ -447,8 +450,8 @@ async fn run_automated_tests() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("    ❌ 应该匹配mixed_params，实际匹配: {}", route_matched);
                                 }
                             }
-                        } else if path.starts_with("/negative/") {
-                            if path.contains(".78") {
+                        } else if actual_path.starts_with("/negative/") {
+                            if actual_path.contains(".78") {
                                 if route_matched == "negative_float" {
                                     println!("    ✅ 负浮点数处理正确");
                                 } else {
@@ -461,8 +464,8 @@ async fn run_automated_tests() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("    ❌ 应该匹配negative_int，实际匹配: {}", route_matched);
                                 }
                             }
-                        } else if path.starts_with("/path/") {
-                            if path.contains("docs") || path.contains("readme") {
+                        } else if actual_path.starts_with("/path/") {
+                            if actual_path.contains("docs") || actual_path.contains("readme") {
                                 // 应该匹配 path_explicit
                                 if route_matched == "path_explicit" {
                                     println!("    ✅ 冲突测试通过: 正确匹配path_explicit路由");
@@ -477,11 +480,11 @@ async fn run_automated_tests() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("    ❌ 应该匹配path_default，实际匹配: {}", route_matched);
                                 }
                             }
-                        } else if path.starts_with("/users/int/") {
+                        } else if actual_path.starts_with("/users/int/") {
                             if json_value.get("parsed_value").is_some() {
                                 println!("    ✅ 整数参数解析正确");
                             }
-                        } else if path.starts_with("/files/") {
+                        } else if actual_path.starts_with("/files/") {
                             if json_value.get("type").and_then(|v| v.as_str()) == Some("path_parameter") {
                                 println!("    ✅ 路径参数处理正确");
                             }
