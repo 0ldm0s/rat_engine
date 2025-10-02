@@ -226,13 +226,18 @@ impl RouteKey {
 
     /// 快速参数提取（使用映射表，避免正则匹配）
     pub fn extract_params_fast(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
+        crate::utils::logger::debug!("🔍 [RouteKey] 快速参数提取: {} {} -> 模式: {}", method, path, self.path);
+
         if &self.method != method {
+            crate::utils::logger::debug!("❌ [RouteKey] 方法不匹配: {} != {}", method, self.method);
             return None;
         }
 
         // 如果没有参数，直接进行字符串匹配
         if self.param_mapping.is_none() {
-            return if self.path == path {
+            let matches = self.path == path;
+            crate::utils::logger::debug!("🔍 [RouteKey] 静态路由匹配: {} -> {}", self.path, matches);
+            return if matches {
                 Some(HashMap::new())
             } else {
                 None
@@ -244,51 +249,67 @@ impl RouteKey {
 
         // 按斜杠分割请求路径
         let request_segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        crate::utils::logger::debug!("🔍 [RouteKey] 请求路径段: {:?}", request_segments);
+        crate::utils::logger::debug!("🔍 [RouteKey] 路由模式段: {:?}", mapping.segments);
 
         // 检查是否有path类型参数
         let has_path_param = mapping.param_types.values().any(|t| t == "path");
+        crate::utils::logger::debug!("🔍 [RouteKey] 是否有path参数: {}", has_path_param);
 
         // 检查静态段是否匹配，同时提取参数
         let mut params = HashMap::new();
         for (i, segment) in mapping.segments.iter().enumerate() {
+            crate::utils::logger::debug!("🔍 [RouteKey] 检查段[{}]: {} vs 请求: {:?}", i, segment, request_segments.get(i));
+
             if segment.starts_with('<') && segment.ends_with('>') {
                 // 这是一个参数段
                 let param_name = &segment[1..segment.len()-1];
                 let param_type = mapping.param_types.get(param_name)?;
+                crate::utils::logger::debug!("🔍 [RouteKey] 参数段: {} 类型: {}", param_name, param_type);
 
                 if param_type == "path" {
                     // path类型：提取从当前位置到末尾的所有段，用斜杠拼接
                     if i >= request_segments.len() {
+                        crate::utils::logger::debug!("❌ [RouteKey] path参数索引越界: {} >= {}", i, request_segments.len());
                         return None;
                     }
                     let path_value = request_segments[i..].join("/");
+                    crate::utils::logger::debug!("✅ [RouteKey] path参数提取: {} = {}", param_name, path_value);
                     params.insert(param_name.to_string(), path_value);
                     break; // path参数后面不再有其他段
                 } else {
                     // 普通参数：提取单个段
                     if i >= request_segments.len() {
+                        crate::utils::logger::debug!("❌ [RouteKey] 参数索引越界: {} >= {}", i, request_segments.len());
                         return None;
                     }
                     let request_segment = request_segments.get(i)?;
+                    crate::utils::logger::debug!("✅ [RouteKey] 普通参数提取: {} = {}", param_name, request_segment);
                     params.insert(param_name.to_string(), request_segment.to_string());
                 }
             } else {
                 // 这是一个静态段，必须完全匹配
                 if i >= request_segments.len() {
+                    crate::utils::logger::debug!("❌ [RouteKey] 静态段索引越界: {} >= {}", i, request_segments.len());
                     return None;
                 }
                 let request_segment = request_segments.get(i)?;
                 if segment != request_segment {
+                    crate::utils::logger::debug!("❌ [RouteKey] 静态段不匹配: '{}' != '{}'", segment, request_segment);
                     return None;
                 }
+                crate::utils::logger::debug!("✅ [RouteKey] 静态段匹配: '{}'", segment);
             }
         }
 
         // 对于没有path参数的路由，检查段数量是否匹配
         if !has_path_param && request_segments.len() != mapping.segments.len() {
+            crate::utils::logger::debug!("❌ [RouteKey] 段数量不匹配: {} != {} (无path参数)",
+                request_segments.len(), mapping.segments.len());
             return None;
         }
 
+        crate::utils::logger::debug!("✅ [RouteKey] 快速匹配成功: {:?}", params);
         Some(params)
     }
 
@@ -508,15 +529,21 @@ impl Router {
     async fn route_and_handle(&self, req: HttpRequest) -> Result<Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, hyper::Error> {
         self.route_and_handle_internal(req, false).await
     }
-    
+
     async fn route_and_handle_internal(&self, req: HttpRequest, is_spa_fallback: bool) -> Result<Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, hyper::Error> {
         let method = req.method.clone(); // 克隆 method 避免借用问题
         let path = req.path().to_string(); // 克隆路径字符串
 
+        crate::utils::logger::debug!("🔍 [Router] 开始路由匹配: {} {}", method, path);
+        crate::utils::logger::debug!("🔍 [Router] 注册的标准路由数量: {}", self.http_routes.len());
+        crate::utils::logger::debug!("🔍 [Router] 注册的流式路由数量: {}", self.http_streaming_routes.len());
+
         // 1. 尝试流式路由匹配
+        crate::utils::logger::debug!("🔍 [Router] 尝试流式路由匹配...");
         for (route_key, handler) in &self.http_streaming_routes {
+            crate::utils::logger::debug!("🔍 [Router] 检查流式路由: {} {}", route_key.method, route_key.path);
             if let Some(params) = route_key.matches(&method, &path) {
-                crate::utils::logger::debug!("🔍 [Router] 匹配到流式路由: {} {}", method, path);
+                crate::utils::logger::debug!("✅ [Router] 匹配到流式路由: {} {}, 参数: {:?}", method, path, params);
                 let req_with_params = Self::set_path_params_to_request(req, params.clone());
                 let response = handler(req_with_params, params).await?;
                 let (parts, body) = response.into_parts();
@@ -525,13 +552,17 @@ impl Router {
                 // 注意：req 已经被消耗，这里需要一个新的请求对象用于压缩
                 // 由于流式路由通常不使用压缩，我们暂时跳过压缩
                 return Ok(response);
+            } else {
+                crate::utils::logger::debug!("❌ [Router] 流式路由不匹配: {} {}", route_key.method, route_key.path);
             }
         }
 
         // 2. 尝试标准路由匹配
+        crate::utils::logger::debug!("🔍 [Router] 尝试标准路由匹配...");
         for (route_key, handler) in &self.http_routes {
+            crate::utils::logger::debug!("🔍 [Router] 检查标准路由: {} {}", route_key.method, route_key.path);
             if let Some(params) = route_key.matches(&method, &path) {
-                crate::utils::logger::debug!("🔍 [Router] 匹配到标准路由: {} {}", method, path);
+                crate::utils::logger::debug!("✅ [Router] 匹配到标准路由: {} {}, 参数: {:?}", method, path, params);
                 let req_with_params = Self::set_path_params_to_request(req, params.clone());
 
                 // 对于GET请求，先检查缓存
@@ -567,6 +598,8 @@ impl Router {
                 let mut response = Response::from_parts(parts, boxed_body);
 
                 return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
+            } else {
+                crate::utils::logger::debug!("❌ [Router] 标准路由不匹配: {} {}", route_key.method, route_key.path);
             }
         }
 
