@@ -23,10 +23,10 @@ use tokio::sync::oneshot;
 
 /// 用户信息处理器
 async fn handle_user_info(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat_engine::Error> {
-    // 从请求中提取路径参数（这里简化处理，实际应该从路由器传递）
+    // 使用新的路径参数系统
+    let user_id = req.param_as_i64("id").unwrap_or(0);
     let path = req.path();
-    let user_id = extract_user_id_from_path(path);
-    
+
     let response_data = json!({
         "user_id": user_id,
         "name": format!("用户{}", user_id),
@@ -35,24 +35,25 @@ async fn handle_user_info(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat
         "created_at": "2024-01-01T00:00:00Z",
         "path_matched": path
     });
-    
+
     let response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(response_data.to_string())))
         .unwrap();
-    
+
     Ok(response)
 }
 
 /// 用户资料更新处理器
 async fn handle_user_profile_update(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat_engine::Error> {
+    // 使用新的路径参数系统
+    let user_id = req.param_as_i64("id").unwrap_or(0);
     let path = req.path();
-    let user_id = extract_user_id_from_path(path);
-    
+
     // 读取请求体
     let body_str = req.body_as_string().unwrap_or_default();
-    
+
     let response_data = json!({
         "user_id": user_id,
         "message": "用户资料更新成功",
@@ -63,21 +64,22 @@ async fn handle_user_profile_update(req: HttpRequest) -> Result<Response<Full<By
             .as_secs(),
         "path_matched": path
     });
-    
+
     let response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(response_data.to_string())))
         .unwrap();
-    
+
     Ok(response)
 }
 
 /// API 项目处理器
 async fn handle_api_item(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat_engine::Error> {
+    // 使用新的路径参数系统
+    let item_id = req.param_as_i64("id").unwrap_or(0);
     let path = req.path();
-    let item_id = extract_item_id_from_path(path);
-    
+
     let response_data = json!({
         "item_id": item_id,
         "name": format!("项目{}", item_id),
@@ -90,21 +92,23 @@ async fn handle_api_item(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat_
             .unwrap()
             .as_secs()
     });
-    
+
     let response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(response_data.to_string())))
         .unwrap();
-    
+
     Ok(response)
 }
 
 /// 用户帖子处理器
 async fn handle_user_post(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat_engine::Error> {
+    // 使用新的路径参数系统
+    let user_id = req.param_as_i64("user_id").unwrap_or(0);
+    let post_id = req.param_as_i64("post_id").unwrap_or(0);
     let path = req.path();
-    let (user_id, post_id) = extract_user_post_ids_from_path(path);
-    
+
     let response_data = json!({
         "user_id": user_id,
         "post_id": post_id,
@@ -117,13 +121,13 @@ async fn handle_user_post(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat
         "likes": 42,
         "path_matched": path
     });
-    
+
     let response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(response_data.to_string())))
         .unwrap();
-    
+
     Ok(response)
 }
 
@@ -209,7 +213,11 @@ python test_dynamic_routes.py --url http://localhost:8081</pre>
     Ok(response)
 }
 
-// 辅助函数：从路径中提取用户ID
+// ========== 保留的辅助函数（供参考）==========
+// 注意：这些函数展示了如何手动解析路径参数，但现在推荐使用 req.param_*() 方法
+
+/// 从路径中提取用户ID（手动解析示例，已废弃）
+/// 现在推荐使用：req.param_as_i64("id") 或 req.param("id")
 fn extract_user_id_from_path(path: &str) -> String {
     // 简化的路径解析，实际应该使用路由器提供的参数
     if let Some(captures) = regex::Regex::new(r"/users/([^/]+)").unwrap().captures(path) {
@@ -219,7 +227,8 @@ fn extract_user_id_from_path(path: &str) -> String {
     }
 }
 
-// 辅助函数：从路径中提取项目ID
+/// 从路径中提取项目ID（手动解析示例，已废弃）
+/// 现在推荐使用：req.param_as_i64("id") 或 req.param("id")
 fn extract_item_id_from_path(path: &str) -> String {
     if let Some(captures) = regex::Regex::new(r"/api/v1/items/([^/]+)").unwrap().captures(path) {
         captures.get(1).map(|m| m.as_str().to_string()).unwrap_or_default()
@@ -228,7 +237,8 @@ fn extract_item_id_from_path(path: &str) -> String {
     }
 }
 
-// 辅助函数：从路径中提取用户ID和帖子ID
+/// 从路径中提取用户ID和帖子ID（手动解析示例，已废弃）
+/// 现在推荐使用：req.param_as_i64("user_id") 和 req.param_as_i64("post_id")
 fn extract_user_post_ids_from_path(path: &str) -> (String, String) {
     if let Some(captures) = regex::Regex::new(r"/api/v1/users/([^/]+)/posts/([^/]+)").unwrap().captures(path) {
         let user_id = captures.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
