@@ -28,7 +28,7 @@
 
 - 🚀 **高性能**: 基于 Tokio 和 Hyper 的异步架构
 - 🔧 **硬件自适应**: 自动检测 CPU 核心数并优化线程配置
-- 🛣️ **灵活路由**: 支持 HTTP 方法和路径的精确匹配
+- 🛣️ **灵活路由**: 支持 HTTP 方法和路径的精确匹配，**自动路径参数提取**
 - 📊 **内置监控**: 请求日志、性能指标、健康检查
 - ⚡ **工作窃取**: 高效的任务调度和负载均衡算法
 - 🧠 **内存池**: 智能内存管理，减少分配开销
@@ -89,6 +89,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **重要说明**: RatEngine 结构体本身是一个空实现，所有功能必须通过 `RatEngine::builder()` 创建构建器来访问。
 
+### 路径参数支持
+
+RAT Engine 支持强大的路径参数自动提取功能，支持多种参数类型：
+
+- **整数**: `<id>` 或 `<int:id>` - 默认为整数类型
+- **字符串**: `<str:id>`, `<string:id>`, `<uuid:id>` - 支持 UUID 等字符串
+- **浮点数**: `<float:price>` - 支持小数
+- **路径**: `<path:file_path>` - 可包含斜杠的完整路径
+
+使用便捷的 API 自动提取参数，无需手动解析：
+```rust
+let user_id = req.param_as_i64("id").unwrap_or(0);
+let user_uuid = req.param("uuid").unwrap_or("default");
+let price = req.param_as_f64("price").unwrap_or(0.0);
+```
+
+📖 **完整示例请查看**:
+- `examples/dynamic_routes_demo.rs` - 基础路径参数示例
+- `examples/advanced_path_params_demo.rs` - 高级参数类型演示
+
 ### 运行示例
 
 项目提供了多个功能示例：
@@ -111,6 +131,12 @@ cargo run --example grpc_client_bidirectional_example
 
 # 运行 ACME 证书管理示例
 cargo run --example acme_sandbox_demo
+
+# 运行动态路由示例（需要 reqwest 特性）
+cargo run --example dynamic_routes_demo --features reqwest
+
+# 运行高级路径参数示例（需要 reqwest 特性）
+cargo run --example advanced_path_params_demo --features reqwest
 ```
 
 ## 核心模块 🏗️
@@ -198,7 +224,8 @@ examples/              # 示例文件
 ├── cache_compression_performance_test.rs # 缓存性能测试
 ├── grpc_client_bidirectional_example.rs # gRPC 客户端示例
 ├── acme_sandbox_demo.rs # ACME 证书管理示例
-└── dynamic_routes_demo.rs # 动态路由示例
+├── dynamic_routes_demo.rs # 动态路由示例
+└── advanced_path_params_demo.rs # 高级路径参数示例
 ```
 
 ## 开发指南 🛠️

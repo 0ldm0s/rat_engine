@@ -21,7 +21,7 @@ pub enum RequestSource {
 }
 
 /// 统一的 HTTP 请求结构体
-/// 
+///
 /// 用于替换 hyper::Request<Incoming>，支持标准 HTTP 请求和 SSE
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
@@ -39,6 +39,8 @@ pub struct HttpRequest {
     pub remote_addr: Option<SocketAddr>,
     /// 请求来源
     pub source: RequestSource,
+    /// 路径参数（由路由器填充）
+    pub path_params: HashMap<String, String>,
 }
 
 impl HttpRequest {
@@ -80,6 +82,7 @@ impl HttpRequest {
             body: body_bytes,
             remote_addr,
             source,
+            path_params: HashMap::new(),
         })
     }
 
@@ -99,6 +102,7 @@ impl HttpRequest {
             body,
             remote_addr,
             source: RequestSource::Http2,
+            path_params: HashMap::new(),
         }
     }
 
@@ -386,16 +390,16 @@ impl HttpRequest {
             match ip {
                 std::net::IpAddr::V4(ipv4) => {
                     // 排除私有地址和特殊地址
-                    !ipv4.is_private() 
-                        && !ipv4.is_loopback() 
-                        && !ipv4.is_link_local() 
+                    !ipv4.is_private()
+                        && !ipv4.is_loopback()
+                        && !ipv4.is_link_local()
                         && !ipv4.is_broadcast()
                         && !ipv4.is_multicast()
                         && ipv4.octets()[0] != 0  // 排除 0.0.0.0/8
                 }
                 std::net::IpAddr::V6(ipv6) => {
                     // 排除私有地址和特殊地址
-                    !ipv6.is_loopback() 
+                    !ipv6.is_loopback()
                         && !ipv6.is_multicast()
                         && !ipv6.is_unspecified()
                         && !ipv6.segments()[0] & 0xfe00 == 0xfc00  // 排除 fc00::/7 (ULA)
@@ -405,5 +409,68 @@ impl HttpRequest {
         } else {
             false
         }
+    }
+
+    // ========== 路径参数访问方法 ==========
+
+    /// 获取路径参数（原始字符串值）
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.path_params.get(name).map(|s| s.as_str())
+    }
+
+    /// 获取路径参数作为字符串
+    pub fn param_as_str(&self, name: &str) -> Option<&str> {
+        self.param(name)
+    }
+
+    /// 获取路径参数作为 i64 整数
+    pub fn param_as_i64(&self, name: &str) -> Option<i64> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 获取路径参数作为 u64 无符号整数
+    pub fn param_as_u64(&self, name: &str) -> Option<u64> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 获取路径参数作为 i32 整数
+    pub fn param_as_i32(&self, name: &str) -> Option<i32> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 获取路径参数作为 u32 无符号整数
+    pub fn param_as_u32(&self, name: &str) -> Option<u32> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 获取路径参数作为 f64 浮点数
+    pub fn param_as_f64(&self, name: &str) -> Option<f64> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 获取路径参数作为 f32 浮点数
+    pub fn param_as_f32(&self, name: &str) -> Option<f32> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 获取路径参数作为 UUID（如果启用了 uuid 特性）
+    #[cfg(feature = "uuid")]
+    pub fn param_as_uuid(&self, name: &str) -> Option<uuid::Uuid> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// 设置路径参数（由路由器内部使用）
+    pub(crate) fn set_path_param(&mut self, name: String, value: String) {
+        self.path_params.insert(name, value);
+    }
+
+    /// 设置所有路径参数（由路由器内部使用）
+    pub(crate) fn set_path_params(&mut self, params: HashMap<String, String>) {
+        self.path_params = params;
+    }
+
+    /// 获取所有路径参数（只读）
+    pub fn path_params(&self) -> &HashMap<String, String> {
+        &self.path_params
     }
 }

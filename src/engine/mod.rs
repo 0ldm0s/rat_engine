@@ -812,6 +812,7 @@ impl ActualRatEngine {
             body: request.body.into(),
             remote_addr: Some(request.remote_addr.parse()?),
             source: crate::server::http_request::RequestSource::Http1,
+            path_params: std::collections::HashMap::new(),
         };
         
         // 使用路由器处理请求

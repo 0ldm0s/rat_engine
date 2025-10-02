@@ -62,12 +62,12 @@ impl RouteKey {
         if !pattern.contains('<') {
             return (None, Vec::new());
         }
-        
+
         let mut param_names = Vec::new();
         let mut regex_pattern = pattern.to_string();
-        
+
         let param_regex = Regex::new(r"<([^>]+)>").unwrap();
-        
+
         regex_pattern = param_regex.replace_all(&regex_pattern, |caps: &regex::Captures| {
             let param_def = &caps[1];
             if param_def.contains(':') {
@@ -76,26 +76,27 @@ impl RouteKey {
                     let param_type = parts[0];
                     let param_name = parts[1];
                     param_names.push(param_name.to_string());
-                    
+
                     match param_type {
                         "int" => r"(\d+)",
+                        "str" | "string" | "uuid" => r"([^/]+)",
                         "float" => r"([\d.]+)",
                         "path" => r"(.+)",
                         _ => r"([^/]+)",
                     }
                 } else {
                     param_names.push(param_def.to_string());
-                    r"([^/]+)"
+                    r"(\d+)"  // 默认为整数类型
                 }
             } else {
                 param_names.push(param_def.to_string());
-                r"([^/]+)"
+                r"(\d+)"  // 默认为整数类型
             }
         }).to_string();
-        
+
         regex_pattern = regex_pattern.replace(".", "\\.");
         regex_pattern = format!("^{}$", regex_pattern);
-        
+
         match Regex::new(&regex_pattern) {
             Ok(regex) => (Some(regex), param_names),
             Err(_) => (None, Vec::new()),
@@ -206,6 +207,12 @@ impl Router {
         router
     }
 
+    /// 将路径参数设置到请求中
+    fn set_path_params_to_request(mut req: HttpRequest, params: HashMap<String, String>) -> HttpRequest {
+        req.set_path_params(params);
+        req
+    }
+
     /// 添加标准 HTTP 路由
     pub fn add_route<H>(&mut self, method: Method, path: impl Into<String>, handler: H) -> &mut Self
     where
@@ -301,14 +308,15 @@ impl Router {
     }
     
     async fn route_and_handle_internal(&self, req: HttpRequest, is_spa_fallback: bool) -> Result<Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, hyper::Error> {
-        let method = &req.method;
+        let method = req.method.clone(); // 克隆 method 避免借用问题
         let path = req.path().to_string(); // 克隆路径字符串
 
         // 1. 尝试流式路由匹配
         for (route_key, handler) in &self.http_streaming_routes {
-            if let Some(params) = route_key.matches(method, &path) {
+            if let Some(params) = route_key.matches(&method, &path) {
                 crate::utils::logger::debug!("🔍 [Router] 匹配到流式路由: {} {}", method, path);
-                let response = handler(req, params).await?;
+                let req_with_params = Self::set_path_params_to_request(req, params.clone());
+                let response = handler(req_with_params, params).await?;
                 let (parts, body) = response.into_parts();
                 let boxed_body = BoxBody::new(body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e }));
                 let mut response = Response::from_parts(parts, boxed_body);
@@ -320,21 +328,22 @@ impl Router {
 
         // 2. 尝试标准路由匹配
         for (route_key, handler) in &self.http_routes {
-            if let Some(_params) = route_key.matches(method, &path) {
+            if let Some(params) = route_key.matches(&method, &path) {
                 crate::utils::logger::debug!("🔍 [Router] 匹配到标准路由: {} {}", method, path);
-                
+                let req_with_params = Self::set_path_params_to_request(req, params.clone());
+
                 // 对于GET请求，先检查缓存
-                if method == &hyper::Method::GET {
+                if method == hyper::Method::GET {
                     #[cfg(feature = "cache")]
                     {
-                        if let Some(cached_response) = self.apply_cache(&req, &path).await {
+                        if let Some(cached_response) = self.apply_cache(&req_with_params, &path).await {
                             crate::utils::logger::debug!("🎯 [Router] 缓存命中: GET {}", path);
                             return Ok(cached_response);
                         }
                     }
 
                     // 缓存未命中或无缓存功能，处理请求
-                    let response = handler(req.clone()).await?;
+                    let response = handler(req_with_params.clone()).await?;
                     let (parts, body) = response.into_parts();
                     let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
                     let mut response = Response::from_parts(parts, boxed_body);
@@ -342,20 +351,20 @@ impl Router {
                     // 应用缓存中间件（如果启用）
                     #[cfg(feature = "cache")]
                     {
-                        response = self.apply_cache_middleware(&req, response).await?;
+                        response = self.apply_cache_middleware(&req_with_params, response).await?;
                     }
 
                     // 应用压缩
-                    return Ok(self.apply_compression_boxed(response, &path, &req).await?);
+                    return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
                 }
-                
+
                 // 非GET请求直接处理
-                let response = handler(req.clone()).await?;
+                let response = handler(req_with_params.clone()).await?;
                 let (parts, body) = response.into_parts();
                 let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
                 let mut response = Response::from_parts(parts, boxed_body);
-                
-                return Ok(self.apply_compression_boxed(response, &path, &req).await?);
+
+                return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
             }
         }
 
@@ -363,9 +372,9 @@ impl Router {
         let wildcard_key = RouteKey::new(method.clone(), "/*".to_string());
         if let Some(handler) = self.http_routes.get(&wildcard_key) {
             crate::utils::logger::debug!("🔍 [Router] 匹配到通配符路由: /*");
-            
+
             // 对于GET请求，先检查缓存
-            if method == &hyper::Method::GET {
+            if method == hyper::Method::GET {
                 #[cfg(feature = "cache")]
                 {
                     if let Some(cached_response) = self.apply_cache(&req, &path).await {
