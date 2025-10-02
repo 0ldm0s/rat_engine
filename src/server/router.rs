@@ -40,32 +40,276 @@ pub type HttpStreamingHandler = Arc<dyn Fn(HttpRequest, HashMap<String, String>)
 
 
 
+/// 路由参数映射信息
+///
+/// # 设计约束
+///
+/// ## 关于 path 类型参数的重要说明
+///
+/// 当使用 `<path:param_name>` 类型参数时：
+/// - path 参数会**消耗从当前位置开始的所有后续路径段**
+/// - path 参数**必须是路由模式中的最后一个参数**
+/// - 不允许在 path 参数后面再有其他路径段或参数
+///
+/// # 有效的路由示例
+///
+/// ```rust
+/// // ✅ 正确：path 参数作为最后一个参数
+/// "/files/<path:file_path>"     // 匹配："/files/docs/readme.md" → file_path: "docs/readme.md"
+/// "/api/v1/download/<path:file>" // 匹配："/api/v1/download/user/docs/report.pdf" → file: "user/docs/report.pdf"
+///
+/// // ✅ 正确：path 参数与其他参数组合，path 在最后
+/// "/users/<user_id>/files/<path:file_path>" // 匹配："/users/123/files/docs/report.pdf"
+/// ```
+///
+/// # 无效的路由示例
+///
+/// ```rust
+/// // ❌ 错误：path 参数后面不能有其他路径段
+/// "/files/<path:file_path>/download"  // 会导致路由匹配异常
+/// "/api/<path:api_path>/version"     // 会导致路由匹配异常
+///
+/// // ❌ 错误：path 参数后面不能有其他参数
+/// "/files/<path:file_path>/<ext>"    // 会导致路由匹配异常
+/// ```
+///
+/// # 参数提取行为
+///
+/// - 普通参数：`<id>` → 匹配单个段，如 `123`
+/// - path 参数：`<path:file_path>` → 匹配从当前位置到路径末尾的所有内容，包含斜杠
+#[derive(Debug, Clone)]
+pub struct RouteParamMapping {
+    /// 路径分段（按/分割）
+    segments: Vec<String>,
+    /// 参数名到位置的映射（0-based）
+    param_positions: HashMap<String, usize>,
+    /// 参数名到类型的映射（从路径模式中解析）
+    param_types: HashMap<String, String>,
+}
+
+impl RouteParamMapping {
+    /// 获取参数位置映射
+    pub fn get_param_positions(&self) -> &HashMap<String, usize> {
+        &self.param_positions
+    }
+
+    /// 获取参数类型映射
+    pub fn get_param_types(&self) -> &HashMap<String, String> {
+        &self.param_types
+    }
+}
+
+/// 从路由模式创建参数映射表
+fn create_param_mapping(pattern: &str) -> Option<RouteParamMapping> {
+    if !pattern.contains('<') {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    let mut param_positions = HashMap::new();
+    let mut param_types = HashMap::new();
+
+    // 按斜杠分割路径
+    let path_segments: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+
+    // 首先检查是否有path类型参数的异常用法
+    for (pos, segment) in path_segments.iter().enumerate() {
+        if segment.starts_with('<') && segment.ends_with('>') {
+            let param_content = &segment[1..segment.len()-1];
+
+            if param_content.contains(':') {
+                let parts: Vec<&str> = param_content.split(':').collect();
+                if parts.len() == 2 && parts[0] == "path" {
+                    // 检查path参数是否是最后一个段
+                    if pos != path_segments.len() - 1 {
+                        panic!(
+                            "路由模式 '{}' 中的 path 参数 '{}' 不是最后一个参数！\n\
+                            path 类型参数必须是路由模式中的最后一个参数。\n\
+                            当前位置: {} (从0开始)\n\
+                            路径段数: {}\n\
+                            请修改路由模式，确保 path 参数是最后一个，例如：\n\
+                            ✅ 正确: '/files/<path:file_path>'\n\
+                            ❌ 错误: '/files/<path:file_path>/download'",
+                            pattern, parts[1], pos, path_segments.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for (pos, segment) in path_segments.iter().enumerate() {
+        if segment.starts_with('<') && segment.ends_with('>') {
+            // 这是一个参数段
+            let param_content = &segment[1..segment.len()-1]; // 去掉< >
+
+            // 解析参数类型和名称
+            if param_content.contains(':') {
+                let parts: Vec<&str> = param_content.split(':').collect();
+                if parts.len() == 2 {
+                    let param_type = parts[0];
+                    let param_name = parts[1];
+
+                    // 特殊处理path类型：path类型会消耗后续所有段
+                    if param_type == "path" {
+                        param_positions.insert(param_name.to_string(), pos);
+                        param_types.insert(param_name.to_string(), "path".to_string());
+                        segments.push(format!("<{}>", param_name));
+                        // path类型是最后一个参数，直接break
+                        break;
+                    } else {
+                        // 普通参数类型
+                        param_positions.insert(param_name.to_string(), pos);
+                        param_types.insert(param_name.to_string(), param_type.to_string());
+                        segments.push(format!("<{}>", param_name));
+                    }
+                } else {
+                    // 格式错误，当作普通参数处理
+                    param_positions.insert(param_content.to_string(), pos);
+                    param_types.insert(param_content.to_string(), "int".to_string());
+                    segments.push(format!("<{}>", param_content));
+                }
+            } else {
+                // 无类型约束的参数
+                param_positions.insert(param_content.to_string(), pos);
+                param_types.insert(param_content.to_string(), "int".to_string()); // 默认int类型
+                segments.push(format!("<{}>", param_content));
+            }
+        } else {
+            // 普通路径段
+            segments.push(segment.to_string());
+        }
+    }
+
+    if param_positions.is_empty() {
+        None
+    } else {
+        Some(RouteParamMapping {
+            segments,
+            param_positions,
+            param_types,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RouteKey {
     method: Method,
     path: String,
     regex: Option<Regex>,
     param_names: Vec<String>,
+    /// 新增：路由参数映射表，用于快速参数定位
+    param_mapping: Option<RouteParamMapping>,
 }
 
 impl RouteKey {
+    /// 获取路由参数映射表
+    pub fn get_param_mapping(&self) -> Option<&RouteParamMapping> {
+        self.param_mapping.as_ref()
+    }
     pub fn new(method: Method, path: String) -> Self {
         let (regex, param_names) = compile_pattern(&path)
             .map(|(r, p)| (Some(r), p))
             .unwrap_or_else(|| (None, Vec::new()));
-        RouteKey { 
-            method, 
+
+        // 创建路由参数映射表
+        let param_mapping = create_param_mapping(&path);
+
+        RouteKey {
+            method,
             path,
             regex,
             param_names,
+            param_mapping,
         }
     }
-        
-    pub fn matches(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
+
+    /// 快速参数提取（使用映射表，避免正则匹配）
+    pub fn extract_params_fast(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
         if &self.method != method {
             return None;
         }
-        
+
+        // 如果没有参数，直接进行字符串匹配
+        if self.param_mapping.is_none() {
+            return if self.path == path {
+                Some(HashMap::new())
+            } else {
+                None
+            };
+        }
+
+        // 使用映射表进行快速参数提取
+        let mapping = self.param_mapping.as_ref().unwrap();
+
+        // 按斜杠分割请求路径
+        let request_segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+        // 检查是否有path类型参数
+        let has_path_param = mapping.param_types.values().any(|t| t == "path");
+
+        // 检查静态段是否匹配，同时提取参数
+        let mut params = HashMap::new();
+        for (i, segment) in mapping.segments.iter().enumerate() {
+            if segment.starts_with('<') && segment.ends_with('>') {
+                // 这是一个参数段
+                let param_name = &segment[1..segment.len()-1];
+                let param_type = mapping.param_types.get(param_name)?;
+
+                if param_type == "path" {
+                    // path类型：提取从当前位置到末尾的所有段，用斜杠拼接
+                    if i >= request_segments.len() {
+                        return None;
+                    }
+                    let path_value = request_segments[i..].join("/");
+                    params.insert(param_name.to_string(), path_value);
+                    break; // path参数后面不再有其他段
+                } else {
+                    // 普通参数：提取单个段
+                    if i >= request_segments.len() {
+                        return None;
+                    }
+                    let request_segment = request_segments.get(i)?;
+                    params.insert(param_name.to_string(), request_segment.to_string());
+                }
+            } else {
+                // 这是一个静态段，必须完全匹配
+                if i >= request_segments.len() {
+                    return None;
+                }
+                let request_segment = request_segments.get(i)?;
+                if segment != request_segment {
+                    return None;
+                }
+            }
+        }
+
+        // 对于没有path参数的路由，检查段数量是否匹配
+        if !has_path_param && request_segments.len() != mapping.segments.len() {
+            return None;
+        }
+
+        Some(params)
+    }
+
+    pub fn matches(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
+        // 优先使用快速匹配
+        if let Some(params) = self.extract_params_fast(method, path) {
+            return Some(params);
+        }
+
+        // fallback到正则匹配（理论上不应该用到，但保留作为保险）
+        crate::utils::logger::debug!(
+            "⚠️ [Router] 快速匹配失败，回退到正则匹配 - 路由: {} {}, 模式: {}",
+            method,
+            path,
+            self.path
+        );
+
+        if &self.method != method {
+            return None;
+        }
+
         if let Some(ref regex) = self.regex {
             if let Some(captures) = regex.captures(path) {
                 let mut params = HashMap::new();
