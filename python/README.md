@@ -144,8 +144,164 @@ def create_user(request):
     form_data = request.form()  # 表单数据
     query = request.query()  # 查询参数
     headers = request.headers()  # 请求头
-    
+
     return {"status": "created", "data": data}
+```
+
+## 🛣️ 路径参数 (高级功能)
+
+RAT Engine 支持强大的路径参数功能，包括类型约束和验证。
+
+### 📋 支持的参数类型
+
+- `<param>` - 默认整数类型 (int)
+- `<int:param>` - 整数类型
+- `<str:param>` - 字符串类型
+- `<float:param>` - 浮点数类型
+- `<uuid:param>` - UUID 字符串类型
+- `<path:param>` - 路径类型（可包含斜杠）
+
+### ⚠️ 重要：path 类型参数约束
+
+**当使用 `<path:param>` 类型参数时，必须遵守以下规则：**
+
+1. **🚨 必须明确指定 `path:` 类型前缀**
+   - ✅ 正确：`/files/<path:file_path>`
+   - ❌ 错误：`/files/<file_path>` (这会被当作int类型，无法匹配多级路径)
+
+2. **path 参数必须是路由的最后一个参数**
+3. **path 参数会消耗从当前位置开始的所有后续路径段**
+4. **path 参数后面不能有其他参数**
+
+### 🚨 为什么必须使用 `<path:param>` 格式？
+
+如果不指定类型前缀，系统会将参数默认为 **int 类型**：
+
+```python
+# ❌ 错误！这会被当作int类型，无法匹配包含斜杠的路径
+@app.json("/files/<file_path>")
+def get_file(request_data, path_args):
+    # /files/docs/readme.md 无法匹配，因为 "docs/readme.md" 不是有效整数
+    pass
+
+# ✅ 正确！明确指定为path类型
+@app.json("/files/<path:file_path>")
+def get_file(request_data, path_args):
+    # /files/docs/readme.md 可以正确匹配，file_path="docs/readme.md"
+    pass
+```
+
+### ✅ 正确的路由定义示例
+
+```python
+from rat_engine import RatApp
+
+app = RatApp()
+
+# 基础参数
+@app.json("/users/<user_id>")
+def get_user(request_data, path_args):
+    # user_id 会自动转换为整数
+    user_id = request_data.get('path_params', {}).get('user_id')
+    return {"user_id": int(user_id)}
+
+# 类型约束参数
+@app.json("/products/<float:price>")
+def get_product_by_price(request_data, path_args):
+    price = request_data.get('path_params', {}).get('price')
+    return {"price": float(price)}
+
+# UUID 参数
+@app.json("/users/<uuid:user_id>")
+def get_user_by_uuid(request_data, path_args):
+    user_id = request_data.get('path_params', {}).get('user_id')
+    return {"user_id": user_id}
+
+# ✅ path 参数 - 正确用法（必须是最后一个参数）
+@app.json("/files/<path:file_path>")
+def get_file(request_data, path_args):
+    file_path = request_data.get('path_params', {}).get('file_path')
+    return {"file_path": file_path}
+
+# 混合参数 - path作为最后一个参数
+@app.json("/users/<int:user_id>/files/<path:file_path>")
+def get_user_file(request_data, path_args):
+    params = request_data.get('path_params', {})
+    user_id = params.get('user_id')
+    file_path = params.get('file_path')
+    return {"user_id": int(user_id), "file_path": file_path}
+```
+
+### ❌ 错误的路由定义示例
+
+```python
+# ❌ 最常见错误：忘记指定path类型前缀
+@app.json("/files/<file_path>")
+def get_file(request_data, path_args):
+    # 🚨 错误！这会被当作int类型处理
+    # /files/docs/readme.md 无法匹配，因为 "docs/readme.md" 不是整数
+    pass
+
+# ❌ path 参数不能在中间位置
+@app.json("/files/<path:file_path>/download")
+def download_file(request_data, path_args):
+    # 这会导致路由无法正确匹配！
+    pass
+
+# ❌ path 参数后面不能有其他参数
+@app.json("/files/<path:file_path>/<ext>")
+def get_file_with_ext(request_data, path_args):
+    # 这也会导致路由无法正确匹配！
+    pass
+```
+
+### 🔍 常见错误排查
+
+如果你的路由无法匹配包含斜杠的路径，请检查：
+
+1. **是否明确指定了 `<path:param>` 格式？**
+2. **path参数是否是路由的最后一个参数？**
+3. **请求路径是否与路由模式匹配？**
+
+```python
+# 调试技巧：启用debug日志查看路由匹配过程
+app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
+# 这将显示详细的路由匹配信息，帮助定位问题
+```
+
+### 🧪 路径参数匹配示例
+
+| 路由模式 | 请求路径 | 提取的参数 |
+|---------|---------|-----------|
+| `/files/<path:file_path>` | `/files/readme.md` | `file_path="readme.md"` |
+| `/files/<path:file_path>` | `/files/docs/user/manual.pdf` | `file_path="docs/user/manual.pdf"` |
+| `/users/<int:id>/files/<path:file_path>` | `/users/123/docs/report.pdf` | `id="123", file_path="docs/report.pdf"` |
+
+### 🔧 类型转换和验证
+
+```python
+@app.json("/products/<float:price>")
+def get_product(request_data, path_args):
+    params = request_data.get('path_params', {})
+    price_str = params.get('price', '0')
+
+    # 手动类型转换和验证
+    try:
+        price = float(price_str)
+        is_valid = True
+        param_type = "float"
+    except ValueError:
+        price = 0.0
+        is_valid = False
+        param_type = "invalid"
+
+    return {
+        "price": price,
+        "price_str": price_str,
+        "is_valid": is_valid,
+        "type": param_type
+    }
 ```
 
 #### 响应类型
