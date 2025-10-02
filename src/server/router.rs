@@ -27,6 +27,7 @@ use std::str::FromStr;
 use crate::utils::ip_extractor::{IpExtractor, IpInfo};
 use crate::server::config::ServerConfig;
 use regex::Regex;
+use crate::common::path_params::compile_pattern;
 use crate::server::grpc_handler::{GrpcServiceRegistry, GrpcRequestHandler};
 use crate::server::cert_manager::{CertificateManager, CertManagerConfig};
 use h2::server::{Connection, SendResponse};
@@ -49,7 +50,9 @@ pub struct RouteKey {
 
 impl RouteKey {
     pub fn new(method: Method, path: String) -> Self {
-        let (regex, param_names) = Self::compile_pattern(&path);
+        let (regex, param_names) = compile_pattern(&path)
+            .map(|(r, p)| (Some(r), p))
+            .unwrap_or_else(|| (None, Vec::new()));
         RouteKey { 
             method, 
             path,
@@ -57,52 +60,7 @@ impl RouteKey {
             param_names,
         }
     }
-    
-    fn compile_pattern(pattern: &str) -> (Option<Regex>, Vec<String>) {
-        if !pattern.contains('<') {
-            return (None, Vec::new());
-        }
-
-        let mut param_names = Vec::new();
-        let mut regex_pattern = pattern.to_string();
-
-        let param_regex = Regex::new(r"<([^>]+)>").unwrap();
-
-        regex_pattern = param_regex.replace_all(&regex_pattern, |caps: &regex::Captures| {
-            let param_def = &caps[1];
-            if param_def.contains(':') {
-                let parts: Vec<&str> = param_def.split(':').collect();
-                if parts.len() == 2 {
-                    let param_type = parts[0];
-                    let param_name = parts[1];
-                    param_names.push(param_name.to_string());
-
-                    match param_type {
-                        "int" => r"(\d+)",
-                        "str" | "string" | "uuid" => r"([^/]+)",
-                        "float" => r"([\d.]+)",
-                        "path" => r"(.+)",
-                        _ => r"([^/]+)",
-                    }
-                } else {
-                    param_names.push(param_def.to_string());
-                    r"(\d+)"  // 默认为整数类型
-                }
-            } else {
-                param_names.push(param_def.to_string());
-                r"(\d+)"  // 默认为整数类型
-            }
-        }).to_string();
-
-        regex_pattern = regex_pattern.replace(".", "\\.");
-        regex_pattern = format!("^{}$", regex_pattern);
-
-        match Regex::new(&regex_pattern) {
-            Ok(regex) => (Some(regex), param_names),
-            Err(_) => (None, Vec::new()),
-        }
-    }
-    
+        
     pub fn matches(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
         if &self.method != method {
             return None;

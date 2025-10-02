@@ -32,6 +32,7 @@ use crate::utils::logger::{info, warn, debug, error};
 use crate::python_api::grpc_queue_bridge::PyGrpcMainThread;
 use crate::python_api::http_queue_bridge::{PyHttpMainThread, PyHttpHandler};
 use crate::python_api::cert_manager::PyCertManagerConfig;
+use crate::common::path_params::{extract_params, extract_params_simple, PathParamConfig};
 use std::collections::HashMap;
 use regex::Regex;
 use pyo3::Python;
@@ -54,7 +55,17 @@ impl PyRouter {
     ) -> Result<ChunkedResponse, PyErr> {
         Python::with_gil(|py| {
             // 从请求URI路径中重新提取参数（临时方案，直到主库支持参数传递）
-            let path_params = extract_path_params(&path, req.uri().path());
+            let config = PathParamConfig {
+                enable_logging: true,
+                url_decode: true,
+            };
+            // 使用共享模块提取参数，忽略验证结果以保持原有行为
+          let (path_params, validate_result) = extract_params(&path, req.uri().path(), &config);
+
+          // 调试：如果参数验证失败，记录错误信息但不中断处理
+          if let Err(error_msg) = validate_result {
+              debug!("路径参数验证失败（已忽略，继续处理）: {}", error_msg);
+          }
             
             let request_data_dict = prepare_request_data(
                 py, 
@@ -1580,82 +1591,6 @@ impl PyServer {
     }
 }
 
-/// 提取路径参数
-fn extract_path_params(pattern: &str, path: &str) -> HashMap<String, String> {
-    let mut params = HashMap::new();
-    
-    // 如果模式不包含参数，直接返回空的 HashMap
-    if !pattern.contains('<') {
-        info!("路径模式 '{}' 不包含参数", pattern);
-        return params;
-    }
-    
-    info!("开始提取路径参数 - 模式: '{}', 路径: '{}'", pattern, path);
-    
-    // 编译路径模式为正则表达式
-    let mut param_names = Vec::new();
-    let mut regex_pattern = pattern.to_string();
-    
-    // 提取参数名并替换为正则表达式捕获组
-    let param_regex = Regex::new(r"<([^>]+)>").unwrap();
-    regex_pattern = param_regex.replace_all(&regex_pattern, |caps: &regex::Captures| {
-        let param_def = &caps[1];
-        if param_def.contains(':') {
-            let parts: Vec<&str> = param_def.split(':').collect();
-            if parts.len() == 2 {
-                let param_type = parts[0];
-                let param_name = parts[1];
-                param_names.push(param_name.to_string());
-                
-                match param_type {
-                    "int" => r"(\d+)",
-                    "float" => r"([\d.]+)",
-                    "path" => r"(.+)",
-                    _ => r"([^/]+)",
-                }
-            } else {
-                param_names.push(param_def.to_string());
-                r"([^/]+)"
-            }
-        } else {
-            param_names.push(param_def.to_string());
-            r"([^/]+)"
-        }
-    }).to_string();
-    
-    // 转义点号并添加锚点
-    regex_pattern = regex_pattern.replace(".", "\\.");
-    regex_pattern = format!("^{}$", regex_pattern);
-    
-    info!("生成的正则表达式: '{}'", regex_pattern);
-    info!("参数名列表: {:?}", param_names);
-    
-    // 尝试匹配并提取参数
-    if let Ok(regex) = Regex::new(&regex_pattern) {
-        if let Some(captures) = regex.captures(path) {
-            info!("正则匹配成功，捕获组数量: {}", captures.len());
-            for (i, param_name) in param_names.iter().enumerate() {
-                if let Some(capture) = captures.get(i + 1) {
-                    let raw_value = capture.as_str();
-                    // URL解码参数值
-                    let decoded_value = urlencoding::decode(raw_value)
-                        .unwrap_or_else(|_| raw_value.into())
-                        .to_string();
-                    
-                    info!("参数 '{}': 原始值='{}', 解码后='{}'", param_name, raw_value, decoded_value);
-                    params.insert(param_name.clone(), decoded_value);
-                }
-            }
-        } else {
-            warn!("正则表达式匹配失败 - 模式: '{}', 路径: '{}'", regex_pattern, path);
-        }
-    } else {
-        error!("正则表达式编译失败: '{}'", regex_pattern);
-    }
-    
-    info!("最终提取的参数: {:?}", params);
-    params
-}
 
 /// 从 HttpRequest 准备请求数据供 Python 处理函数使用
 fn prepare_request_data_from_http_request<'a>(
