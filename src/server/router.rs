@@ -956,9 +956,14 @@ impl Router {
         }
 
         // 检查 SPA 回退（避免无限递归）
+        crate::utils::logger::debug!("🔍 [Router] SPA 回退检查: enabled={}, is_spa_fallback={}, path={}",
+            self.spa_config.enabled, is_spa_fallback, path);
+        crate::utils::logger::debug!("🔍 [Router] SPA 配置: fallback_path={:?}", self.spa_config.fallback_path);
+        crate::utils::logger::debug!("🔍 [Router] should_fallback 结果: {}", self.spa_config.should_fallback(&path));
+
         if !is_spa_fallback && self.spa_config.should_fallback(&path) {
             if let Some(fallback_path) = &self.spa_config.fallback_path {
-                crate::utils::logger::debug!("🔍 [Router] SPA 回退: {} {} -> {}", method, path, fallback_path);
+                crate::utils::logger::info!("🔍 [Router] 执行 SPA 回退: {} {} -> {}", method, path, fallback_path);
 
                 // 创建新的请求，路径指向 SPA 回退路径
                 let mut fallback_req = req.clone();
@@ -971,7 +976,11 @@ impl Router {
 
         // 未找到匹配路由，返回404
         crate::utils::logger::warn!("⚠️ [Router] 未找到匹配路由: {} {} -> 返回404", method, path);
-        Ok(self.create_error_response(StatusCode::NOT_FOUND, "Not Found"))
+
+        // 检查Accept头以决定响应格式
+        let accept_header = req.header("Accept").unwrap_or("");
+
+        Ok(self.create_error_response_with_accept(StatusCode::NOT_FOUND, "Not Found", accept_header))
     }
 
     /// 应用缓存
@@ -1167,15 +1176,127 @@ impl Router {
 
     /// 创建错误响应
     fn create_error_response(&self, status: StatusCode, message: &str) -> Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>> {
-        let body = Full::new(Bytes::from(format!(r#"{{"error":"{}","code":{}}}"#, message, status.as_u16())));
+        self.create_error_response_with_accept(status, message, "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+    }
+
+    /// 根据Accept头创建适当的错误响应
+    fn create_error_response_with_accept(&self, status: StatusCode, message: &str, preferred_accept: &str) -> Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>> {
+        let (body, content_type) = if preferred_accept.contains("text/html") {
+            // 返回HTML格式的错误页面
+            let html_content = self.generate_html_error_page(status, message);
+            (Full::new(Bytes::from(html_content)), "text/html; charset=utf-8")
+        } else {
+            // 返回JSON格式的错误信息
+            let json_content = format!(r#"{{"error":"{}","code":{}}}"#, message, status.as_u16());
+            (Full::new(Bytes::from(json_content)), "application/json")
+        };
+
         let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
-        
+
         Response::builder()
             .status(status)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", content_type)
             .header("server", format!("RAT-Engine/{}", env!("CARGO_PKG_VERSION")))
             .body(boxed_body)
             .unwrap()
+    }
+
+    /// 生成HTML错误页面
+    fn generate_html_error_page(&self, status: StatusCode, message: &str) -> String {
+        format!(r#"<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>错误 {} - RAT Engine</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .error-container {{
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            max-width: 500px;
+            margin: 20px;
+        }}
+        .error-code {{
+            font-size: 6rem;
+            font-weight: bold;
+            color: #e74c3c;
+            margin: 0;
+            line-height: 1;
+        }}
+        .error-message {{
+            font-size: 1.5rem;
+            color: #333;
+            margin: 1rem 0;
+        }}
+        .error-description {{
+            color: #666;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }}
+        .back-button {{
+            display: inline-block;
+            background: #3498db;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }}
+        .back-button:hover {{
+            background: #2980b9;
+        }}
+        .engine-info {{
+            margin-top: 2rem;
+            font-size: 0.9rem;
+            color: #999;
+        }}
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-code">{}</div>
+        <div class="error-message">{}</div>
+        <div class="error-description">
+            {}
+        </div>
+        <a href="/" class="back-button">返回首页</a>
+        <div class="engine-info">
+            Powered by RAT Engine v{}
+        </div>
+    </div>
+</body>
+</html>"#,
+            status.as_u16(),
+            status.as_u16(),
+            message,
+            self.get_error_description(status),
+            env!("CARGO_PKG_VERSION")
+        )
+    }
+
+    /// 获取错误状态的描述信息
+    fn get_error_description(&self, status: StatusCode) -> &'static str {
+        match status.as_u16() {
+            404 => "抱歉，您访问的页面不存在。请检查URL是否正确，或者返回首页继续浏览。",
+            500 => "服务器内部错误。我们正在处理这个问题，请稍后再试。",
+            403 => "访问被拒绝。您没有权限访问此资源。",
+            401 => "需要身份验证。请登录以访问此资源。",
+            400 => "请求格式错误。请检查您的请求参数。",
+            _ => "发生了未知错误。请稍后再试或联系管理员。"
+        }
     }
 
     // ========== gRPC 相关方法（保持不变） ==========

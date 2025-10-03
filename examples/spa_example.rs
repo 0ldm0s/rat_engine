@@ -201,10 +201,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             router // 返回配置好的router
         })
-        .build_and_start("127.0.0.1".to_string(), 3000).await
+        .build_and_start("127.0.0.1".to_string(), 3002).await
         .expect("Failed to start server");
     
-    println!("✅ 服务器已启动，访问 http://127.0.0.1:3000");
+    println!("✅ 服务器已启动，访问 http://127.0.0.1:3002");
     println!("📝 服务器配置信息：");
     println!("   - 工作线程数: {}", engine.get_workers());
     println!("   - 最大连接数: {}", engine.get_max_connections());
@@ -213,11 +213,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   - SPA 配置: /index.html");
     println!("");
     println!("🔍 测试说明:");
-    println!("  • 访问 http://localhost:3000/ - 首页");
-    println!("  • 访问 http://localhost:3000/about - 关于页面（SPA 回退）");
-    println!("  • 访问 http://localhost:3000/contact - 联系页面（SPA 回退）");
-    println!("  • 访问 http://localhost:3000/api/users - API 接口");
-    println!("  • 访问 http://localhost:3000/nonexistent - 不存在的路由（SPA 回退）");
+    println!("  • 访问 http://localhost:3002/ - 首页");
+    println!("  • 访问 http://localhost:3002/about - 关于页面（SPA 回退）");
+    println!("  • 访问 http://localhost:3002/contact - 联系页面（SPA 回退）");
+    println!("  • 访问 http://localhost:3002/api/users - API 接口");
+    println!("  • 访问 http://localhost:3002/nonexistent - 不存在的路由（SPA 回退）");
     println!("");
     println!("💡 SPA 回退逻辑:");
     println!("  • 当请求路径没有文件扩展名时，会触发 SPA 回退");
