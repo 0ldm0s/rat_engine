@@ -10,32 +10,40 @@ from rat_engine import RatApp, HttpRequest, HttpResponse, HttpMethod, rat_debug,
 
 def test_simple_server():
     """测试简单服务器启动"""
-    rat_startup_log("🚀 创建 RatApp...")
+    print("🐍 [PYTHON] ===== 开始 simple_test_server 函数 =====")
+    print("🐍 [PYTHON] 🚀 创建 RatApp...")
+    print("🐍 [PYTHON] RatApp 创建完成，开始配置日志...")
     app = RatApp(name="simple_test")
 
     # 配置日志
+    print("🐍 [PYTHON] 调用 configure_logging...")
     app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
-    
+    print("🐍 [PYTHON] 日志配置完成")
+
+    # 注册路由
+    print("🐍 [PYTHON] 注册路由处理器...")
+
     @app.html("/")
     def home(request_data):
-        rat_info("📄 处理主页请求")
+        rat_info("🐍 [PYTHON] 📄 处理主页请求")
         return "<h1>Hello RAT Engine!</h1>"
 
     @app.json("/api/test")
     def api_test(request_data):
-        rat_debug("🔧 处理API测试请求")
+        rat_debug("🐍 [PYTHON] 🔧 处理API测试请求")
         return {"status": "ok", "message": "API working"}
 
-    rat_info("📡 启动服务器...")
+    print("🐍 [PYTHON] 路由注册完成，准备启动服务器...")
+    print("🐍 [PYTHON] 📡 启动服务器...")
 
     # 测试非阻塞模式启动
-    rat_debug("🔧 测试非阻塞模式启动...")
+    print("🐍 [PYTHON] 🔧 测试非阻塞模式启动...")
     try:
         # 使用默认的非阻塞模式启动服务器
         app.run(host="127.0.0.1", port=8082)
         print("✅ 服务器启动命令执行成功")
     except Exception as e:
-        rat_error(f"❌ 服务器启动失败: {e}")
+        rat_error(f"🐍 [PYTHON] ❌ 服务器启动失败: {e}")
         return False
     
     # 等待服务器启动
