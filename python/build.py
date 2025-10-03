@@ -34,7 +34,7 @@ def run_command(cmd, cwd=None):
 def check_dependencies():
     """检查构建依赖"""
     print("检查构建依赖...")
-    
+
     # 检查 Rust
     try:
         result = subprocess.run(["rustc", "--version"], capture_output=True, text=True)
@@ -46,7 +46,7 @@ def check_dependencies():
     except FileNotFoundError:
         print("❌ Rust 未安装")
         return False
-    
+
     # 检查 maturin
     try:
         result = subprocess.run(["maturin", "--version"], capture_output=True, text=True)
@@ -66,7 +66,7 @@ def check_dependencies():
     else:
         print(f"❌ Python 版本过低: {sys.version}，需要 >= 3.8")
         return False
-    
+
     print("✅ 所有依赖检查通过")
     return True
 

@@ -11,6 +11,12 @@ RAT Engine Python 绑定
 # 直接导入 Rust 实现，不提供 fallback
 try:
     from . import _rat_engine
+
+    # 导入rat_logger函数
+    from ._rat_engine import (
+        rat_debug, rat_info, rat_warn, rat_error,
+        rat_trace, rat_emergency, rat_startup_log, rat_flush_logs
+    )
 except ImportError as e:
     raise ImportError(
         f"无法导入 Rust 模块 '_rat_engine': {e}\n"
@@ -207,5 +213,9 @@ __all__ = [
     'QuickMemManager', 'quickmem_manager', 'get_global_codec',
 
     # 版本信息函数
-    'get_rat_memcache_version'
+    'get_rat_memcache_version',
+
+    # RAT Logger 函数
+    'rat_debug', 'rat_info', 'rat_warn', 'rat_error',
+    'rat_trace', 'rat_emergency', 'rat_startup_log', 'rat_flush_logs'
 ]

@@ -11,6 +11,7 @@ import json
 import time
 import threading
 from rat_engine import RatApp, HttpRequest, HttpResponse, HttpMethod
+import rat_engine_py
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8999  # 使用不同端口避免冲突
@@ -18,7 +19,7 @@ SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 
 def create_test_app():
     """创建测试应用"""
-    print("🚀 创建路由冲突调试应用...")
+    rat_engine_py.rat_startup_log("🚀 创建路由冲突调试应用...")
     app = RatApp(name="route_conflict_debug")
 
     # 启用debug日志

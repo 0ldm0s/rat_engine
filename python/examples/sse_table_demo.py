@@ -37,7 +37,9 @@ table_data: List[Dict] = []  # 表格数据
 
 # 创建应用
 app = RatApp(name="sse_table_demo")
-# 注意：日志配置已移除，现在通过 RatEngineBuilder 处理
+
+# 配置日志
+app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
 
 # 初始化模板引擎
 from rat_engine.templates import TemplateEngine
