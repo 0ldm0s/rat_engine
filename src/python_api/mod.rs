@@ -174,12 +174,29 @@ fn rat_flush_logs() -> PyResult<()> {
 
 /// 获取 rat_memcache 版本信息
 ///
-/// 通过读取依赖项的 Cargo.toml 文件来获取版本信息，避免硬编码
+/// 直接从主库的Cargo.toml文件读取rat_memcache版本
 #[pyfunction]
 fn get_rat_memcache_version() -> PyResult<String> {
-    // rat_memcache 的版本信息，这个会在构建时从依赖项的 Cargo.toml 中读取
-    // 注意：这个版本号需要与 Cargo.toml 中的依赖项版本保持一致
-    Ok("0.2.2".to_string())
+    use std::fs;
+
+    // 读取主库的Cargo.toml文件
+    let cargo_toml_content = fs::read_to_string("../Cargo.toml")
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("无法读取Cargo.toml: {}", e)))?;
+
+    // 解析rat_memcache版本
+    for line in cargo_toml_content.lines() {
+        if line.trim().starts_with("rat_memcache") && line.contains("version") {
+            // 提取版本号
+            if let Some(start) = line.find('"') {
+                if let Some(end) = line[start + 1..].find('"') {
+                    let version = line[start + 1..start + 1 + end].to_string();
+                    return Ok(version);
+                }
+            }
+        }
+    }
+
+    Err(pyo3::exceptions::PyRuntimeError::new_err("在Cargo.toml中未找到rat_memcache版本"))
 }
 
 /// 注册 Python API 模块到 PyO3

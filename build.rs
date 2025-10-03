@@ -21,7 +21,8 @@ fn main() {
     
     // 生成版本信息
     generate_version_info();
-}
+
+  }
 
 /// 设置构建信息
 fn set_build_info() {
