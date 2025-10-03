@@ -1057,7 +1057,7 @@ impl CertificateManager {
             
             info!("✅ ALPN 协议配置已更新: {:?}", 
                 protocols.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>());
-            println!("🔍 [ALPN配置] ALPN 协议已设置到服务器配置: {:?}", protocols);
+            rat_logger::debug!("🔍 [ALPN配置] ALPN 协议已设置到服务器配置: {:?}", protocols);
             Ok(())
         } else {
             Err("服务器配置未初始化，无法配置 ALPN 协议".into())
@@ -1122,9 +1122,9 @@ impl CertificateManager {
             // 保留之前的 ALPN 配置
             if let Some(old_config) = &self.server_config {
                 server_config.alpn_protocols = old_config.alpn_protocols.clone();
-                println!("🔍 [mTLS重配置] 保留 ALPN 配置: {:?}", old_config.alpn_protocols);
+                rat_logger::debug!("🔍 [mTLS重配置] 保留 ALPN 配置: {:?}", old_config.alpn_protocols);
             } else {
-                println!("🔍 [mTLS重配置] 警告：没有找到旧的服务器配置");
+                rat_logger::warn!("🔍 [mTLS重配置] 警告：没有找到旧的服务器配置");
             }
             
             self.server_config = Some(Arc::new(server_config));

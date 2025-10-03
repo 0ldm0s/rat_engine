@@ -362,7 +362,7 @@ async fn handle_connection(
     match detect_and_handle_protocol(stream, remote_addr, router.clone(), adapter.clone()).await {
         Ok(_) => return Ok(()),
         Err(e) => {
-            println!("❌ [服务端] 协议检测失败: {}", e);
+            rat_logger::warn!("❌ [服务端] 协议检测失败: {}", e);
             return Err(e);
         }
     }
@@ -446,11 +446,11 @@ pub async fn detect_and_handle_protocol_with_tls(
     
     // 使用 psi_detector 进行协议检测
     let detection_data = &buffer[..bytes_read];
-    println!("🔍 [服务端] 开始 psi_detector 协议检测: {} (数据长度: {})", remote_addr, bytes_read);
-    
+    rat_logger::debug!("🔍 [服务端] 开始 psi_detector 协议检测: {} (数据长度: {})", remote_addr, bytes_read);
+
     // 添加调试信息：打印接收到的数据
     let data_preview = String::from_utf8_lossy(&buffer[..bytes_read.min(50)]);
-    println!("🔍 [服务端] 接收到的数据预览: {}", data_preview);
+    rat_logger::debug!("🔍 [服务端] 接收到的数据预览: {}", data_preview);
     
     // 创建协议检测器
     let detector = match DetectorBuilder::new()
@@ -478,8 +478,8 @@ pub async fn detect_and_handle_protocol_with_tls(
         Ok(result) => {
             let protocol_type = result.protocol_type();
             let confidence = result.confidence();
-            
-            println!("🔍 [服务端] psi_detector 检测结果: {} (置信度: {:.1}%, 协议: {:?})", 
+
+            rat_logger::debug!("🔍 [服务端] psi_detector 检测结果: {} (置信度: {:.1}%, 协议: {:?})",
                 remote_addr, confidence * 100.0, protocol_type);
             
             // 检查是否需要拦截
@@ -558,7 +558,7 @@ async fn route_by_detected_protocol(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match protocol_type {
         ProtocolType::HTTP1_0 | ProtocolType::HTTP1_1 => {
-            println!("🌐 [服务端] 路由到 HTTP/1.1 处理器: {}", remote_addr);
+            rat_logger::debug!("🌐 [服务端] 路由到 HTTP/1.1 处理器: {}", remote_addr);
             let reconstructed_stream = ReconstructedStream::new(stream, buffer);
             handle_http1_connection_with_stream(reconstructed_stream, remote_addr, adapter).await
         }
@@ -592,7 +592,7 @@ async fn route_by_detected_protocol(
             Err("WebSocket 协议不支持".into())
         }
         ProtocolType::Unknown => {
-            println!("🤔 [服务端] 未知协议类型，尝试按HTTP/1.1处理: {} (协议: {:?})", remote_addr, protocol_type);
+            rat_logger::debug!("🤔 [服务端] 未知协议类型，尝试按HTTP/1.1处理: {} (协议: {:?})", remote_addr, protocol_type);
             // 对于未知协议，尝试按HTTP/1.1处理，可能是HTTP变种或者检测不准确
             let reconstructed_stream = ReconstructedStream::new(stream, buffer);
             handle_http1_connection_with_stream(reconstructed_stream, remote_addr, adapter).await
@@ -651,7 +651,7 @@ where
     let has_grpc_methods = !grpc_methods.is_empty();
     
     // 调试信息：打印 ALPN 协商结果
-    println!("🔍 [服务端] ALPN 协商结果: {:?}, gRPC 方法存在: {}", negotiated_protocol, has_grpc_methods);
+    rat_logger::debug!("🔍 [服务端] ALPN 协商结果: {:?}, gRPC 方法存在: {}", negotiated_protocol, has_grpc_methods);
     
     match negotiated_protocol {
         Some(protocol) if protocol == b"h2" => {
@@ -761,7 +761,7 @@ async fn handle_http1_tls_connection(
         .serve_connection(io, service)
         .await
     {
-        println!("❌ [服务端] HTTP/1.1 over TLS 连接处理失败: {}", e);
+        rat_logger::warn!("❌ [服务端] HTTP/1.1 over TLS 连接处理失败: {}", e);
         return Err(format!("HTTP/1.1 over TLS 连接处理失败: {}", e).into());
     }
     
@@ -952,7 +952,7 @@ async fn handle_h2_request(
         // 处理 gRPC 请求
         router.handle_grpc_request(request_with_addr, respond).await
             .map_err(|e| {
-                println!("❌ [服务端] gRPC 请求处理失败: {}", e);
+                rat_logger::error!("❌ [服务端] gRPC 请求处理失败: {}", e);
                 format!("gRPC 请求处理失败: {}", e)
             })?;
     } else {
