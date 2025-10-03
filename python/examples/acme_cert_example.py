@@ -55,7 +55,7 @@ def create_basic_routes(app):
 
 def example_acme_staging():
     """示例1: ACME 测试环境配置"""
-    print("\n=== 示例1: ACME 测试环境配置 ===")
+    print("\n" + "=== 示例1: ACME 测试环境配置 ===")
     
     # 从命令行参数获取配置
     domain = _cli_args.domain if _cli_args.domain else "gs1.sukiyaki.su"
@@ -100,7 +100,7 @@ def example_acme_staging():
 
 def example_acme_production():
     """示例2: ACME 生产环境配置"""
-    print("\n=== 示例2: ACME 生产环境配置 ===")
+    print("\n" + "=== 示例2: ACME 生产环境配置 ===")
     
     # 从环境变量读取配置
     email = os.getenv("ACME_EMAIL", "admin@yourdomain.com")
@@ -142,7 +142,7 @@ def example_acme_production():
 
 def example_production_certs():
     """示例3: 使用现有的生产环境证书"""
-    print("\n=== 示例3: 生产环境证书配置 ===")
+    print("\n" + "=== 示例3: 生产环境证书配置 ===")
     
     # 证书文件路径
     cert_file = "/path/to/your/cert.pem"
@@ -178,7 +178,7 @@ def example_production_certs():
 
 def example_development_mode():
     """示例4: 开发模式（自签名证书）"""
-    print("\n=== 示例4: 开发模式配置 ===")
+    print("\n" + "=== 示例4: 开发模式配置 ===")
     
     # 创建应用实例
     app = RatApp(name="development_app")

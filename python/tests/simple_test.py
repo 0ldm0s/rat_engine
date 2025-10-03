@@ -6,31 +6,36 @@
 
 import time
 import threading
-from rat_engine import RatApp, HttpRequest, HttpResponse, HttpMethod
+from rat_engine import RatApp, HttpRequest, HttpResponse, HttpMethod, rat_debug, rat_info, rat_warn, rat_error, rat_startup_log
 
 def test_simple_server():
     """测试简单服务器启动"""
-    print("🚀 创建 RatApp...")
+    rat_startup_log("🚀 创建 RatApp...")
     app = RatApp(name="simple_test")
+
+    # 配置日志
+    app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
     
     @app.html("/")
     def home(request_data):
+        rat_info("📄 处理主页请求")
         return "<h1>Hello RAT Engine!</h1>"
-    
+
     @app.json("/api/test")
     def api_test(request_data):
+        rat_debug("🔧 处理API测试请求")
         return {"status": "ok", "message": "API working"}
-    
-    print("📡 启动服务器...")
-    
+
+    rat_info("📡 启动服务器...")
+
     # 测试非阻塞模式启动
-    print("🔧 测试非阻塞模式启动...")
+    rat_debug("🔧 测试非阻塞模式启动...")
     try:
         # 使用默认的非阻塞模式启动服务器
         app.run(host="127.0.0.1", port=8082)
         print("✅ 服务器启动命令执行成功")
     except Exception as e:
-        print(f"❌ 服务器启动失败: {e}")
+        rat_error(f"❌ 服务器启动失败: {e}")
         return False
     
     # 等待服务器启动
@@ -146,7 +151,7 @@ if __name__ == "__main__":
     http_success = test_http_classes()
     
     if http_success:
-        print("\n=" * 50)
+        print("\n" + "=" * 50)
         print("🚀 开始服务器功能测试")
         print("=" * 50)
         # 只有 HTTP 类测试成功才进行服务器测试

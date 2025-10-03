@@ -20,6 +20,9 @@ import datetime
 # 创建应用实例
 app = RatApp(name="template_engine_demo")
 
+# 配置日志
+app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
 # 全局模板变量
 global_vars = {
     'app_name': 'RAT Engine 模板演示',
