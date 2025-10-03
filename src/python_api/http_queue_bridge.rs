@@ -381,6 +381,29 @@ impl PyHttpHandler {
                                 .unwrap_or_else(|| "unknown".to_string())
                         });
                     
+                    // 检查python_handler_name是否存在，如果不存在说明路由匹配有问题
+                    if req_clone.python_handler_name.is_none() {
+                        crate::utils::logger::error!("🚨 [HTTP-BRIDGE] python_handler_name为空，路由匹配失败，路径: {}", req_clone.uri.path());
+
+                        // 返回500错误，避免继续错误执行
+                        let error_response = ResponseData {
+                            status_code: 500,
+                            headers: std::collections::HashMap::from([
+                                ("content-type".to_string(), "application/json".to_string())
+                            ]),
+                            body: serde_json::json!({
+                                "error": "Internal Server Error",
+                                "message": "Route handler identification failed"
+                            }).to_string().into_bytes(),
+                            grpc_status: None,
+                        };
+
+                        if let Err(e) = response_tx.send(error_response) {
+                            crate::utils::logger::error!("🚨 [HTTP-BRIDGE] 发送错误响应失败: {:?}", e);
+                        }
+                        return;
+                    }
+
                     let py_request = crate::python_api::HttpRequest::new(
                             Some(req_clone.method.to_string()),
                             Some(req_clone.uri.path().to_string()),
@@ -391,9 +414,23 @@ impl PyHttpHandler {
                             Some(req_clone.body.to_vec()),
                             Some(remote_addr),
                             Some(real_ip),
-                            Some(std::collections::HashMap::new())
+                            Some(if req_clone.path_params.is_empty() {
+                            // 🔍 调试空HashMap转换
+                            let empty_hashmap = std::collections::HashMap::new();
+                            crate::utils::logger::debug!("🐍 [Rust DEBUG] path_params为空，创建空HashMap，路径: {}, HashMap长度: {}", req_clone.uri.path(), empty_hashmap.len());
+                            empty_hashmap
+                        } else {
+                            // 🔍 调试非空path_params
+                            crate::utils::logger::debug!("🐍 [Rust DEBUG] path_params非空，克隆现有数据，路径: {}, 参数数量: {}", req_clone.uri.path(), req_clone.path_params.len());
+                            req_clone.path_params.clone()
+                        }),
+                            req_clone.python_handler_name.clone()
                         );
-                    
+
+                    // 🔍 调试py_request中的path_params
+                    crate::utils::logger::debug!("🐍 [Rust DEBUG] 创建的py_request path_params长度: {}, python_handler_name: {:?}",
+                        py_request.path_params.len(), py_request.python_handler_name);
+
                     // 调用装饰器函数
                     let response_data = match handler_clone.call1(py, (py_request,)) {
                         Ok(result) => {

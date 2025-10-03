@@ -139,6 +139,8 @@ pub struct RouteInfo {
     has_path_param: bool,
     /// 处理器ID（用于索引到处理器数组）
     handler_id: usize,
+    /// Python处理器名字（仅用于Python集成，避免Python层二次路由匹配）
+    python_handler_name: Option<String>,
 }
 
 /// 路径段类型
@@ -229,7 +231,7 @@ impl RouteNode {
     }
 
     /// 插入路由 - Radix Tree 构建
-    pub fn insert_route(&mut self, method: Method, pattern: String, route_type: RouteType, handler_id: usize) {
+    pub fn insert_route(&mut self, method: Method, pattern: String, route_type: RouteType, handler_id: usize, python_handler_name: Option<String>) {
         crate::utils::logger::debug!("🔧 [RouteNode] 插入路由: {} {} {:?} (handler_id: {})", method, pattern, route_type, handler_id);
 
         // ⚠️ 检测潜在的路由冲突
@@ -308,6 +310,7 @@ impl RouteNode {
             priority_score,
             has_path_param,
             handler_id,
+            python_handler_name,
         };
 
         // 构建Radix Tree路径
@@ -772,6 +775,13 @@ impl Router {
         req
     }
 
+    /// 将路径参数和Python处理器名字设置到请求中
+    fn set_path_params_and_handler_to_request(mut req: HttpRequest, params: HashMap<String, String>, python_handler_name: Option<String>) -> HttpRequest {
+        req.set_path_params(params);
+        req.set_python_handler_name(python_handler_name);
+        req
+    }
+
     /// 添加标准 HTTP 路由
     pub fn add_route<H>(&mut self, method: Method, path: impl Into<String>, handler: H) -> &mut Self
     where
@@ -783,7 +793,7 @@ impl Router {
 
         // 🆕 使用 Radix Tree 添加路由
         use crate::server::router::RouteType;
-        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Http, handler_id);
+        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Http, handler_id, None); // 暂时传递None，后续实现handler_name捕获
 
         crate::utils::logger::debug!("🔧 [Router] 添加路由: {} {} -> handler_id: {}", method, path_str, handler_id);
         self
@@ -802,7 +812,7 @@ impl Router {
         // 🆕 为每个方法添加路由到 Radix Tree
         use crate::server::router::RouteType;
         for method in methods {
-            self.route_tree.insert_route(method, path_str.clone(), RouteType::Http, handler_id);
+            self.route_tree.insert_route(method, path_str.clone(), RouteType::Http, handler_id, None); // 暂时传递None，后续实现handler_name捕获
         }
 
         self
@@ -819,13 +829,51 @@ impl Router {
 
         // 🆕 使用 Radix Tree 添加流式路由
         use crate::server::router::RouteType;
-        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Streaming, handler_id);
+        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Streaming, handler_id, None); // 暂时传递None，后续实现handler_name捕获
 
         crate::utils::logger::debug!("🔧 [Router] 添加流式路由: {} {} -> handler_id: {}", method, path_str, handler_id);
         self
     }
 
+    /// 🆕 添加带有Python处理器名称的HTTP路由 (基于 Radix Tree)
+    ///
+    /// 这个方法专门用于Python集成，可以传递python_handler_name来避免Python层的二次路由匹配
+    pub fn add_route_with_handler_name<H>(&mut self, method: Method, path: impl Into<String>, handler: H, python_handler_name: Option<String>) -> &mut Self
+    where
+        H: Fn(HttpRequest) -> Pin<Box<dyn Future<Output = Result<Response<Full<Bytes>>, hyper::Error>> + Send>> + Send + Sync + 'static,
+    {
+        let path_str = path.into();
+        let handler_id = self.http_handlers.len(); // 分配处理器ID
+        self.http_handlers.push(Arc::new(handler));
 
+        // 🆕 为每个方法添加路由到 Radix Tree，传递python_handler_name
+        use crate::server::router::RouteType;
+        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Http, handler_id, python_handler_name.clone());
+
+        crate::utils::logger::debug!("🔧 [Router] 添加HTTP路由(带Python处理器名): {} {} -> handler_id: {}, python_handler_name: {:?}",
+                                    method, path_str, handler_id, python_handler_name);
+        self
+    }
+
+    /// 🆕 添加带有Python处理器名称的流式HTTP路由 (基于 Radix Tree)
+    ///
+    /// 这个方法专门用于Python集成，可以传递python_handler_name来避免Python层的二次路由匹配
+    pub fn add_streaming_route_with_handler_name<H>(&mut self, method: Method, path: impl Into<String>, handler: H, python_handler_name: Option<String>) -> &mut Self
+    where
+        H: Fn(HttpRequest, HashMap<String, String>) -> Pin<Box<dyn Future<Output = Result<Response<StreamingBody>, hyper::Error>> + Send>> + Send + Sync + 'static,
+    {
+        let path_str = path.into();
+        let handler_id = self.http_streaming_handlers.len();
+        self.http_streaming_handlers.push(Arc::new(handler));
+
+        // 🆕 使用 Radix Tree 添加流式路由，传递python_handler_name
+        use crate::server::router::RouteType;
+        self.route_tree.insert_route(method.clone(), path_str.clone(), RouteType::Streaming, handler_id, python_handler_name.clone());
+
+        crate::utils::logger::debug!("🔧 [Router] 添加流式路由(带Python处理器名): {} {} -> handler_id: {}, python_handler_name: {:?}",
+                                    method, path_str, handler_id, python_handler_name);
+        self
+    }
 
     /// 处理 HTTP 请求的主入口（通用结构体版本）
     pub async fn handle_http(&self, req: HttpRequest) -> Result<Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, hyper::Error> {
@@ -904,7 +952,7 @@ impl Router {
                 // 流式路由处理
                 if best_match.route_info.handler_id < self.http_streaming_handlers.len() {
                     let handler = &self.http_streaming_handlers[best_match.route_info.handler_id];
-                    let req_with_params = Self::set_path_params_to_request(req, best_match.params.clone());
+                    let req_with_params = Self::set_path_params_and_handler_to_request(req, best_match.params.clone(), best_match.route_info.python_handler_name.clone());
                     let response = handler(req_with_params, best_match.params.clone()).await?;
                     let (parts, body) = response.into_parts();
                     let boxed_body = BoxBody::new(body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e }));
@@ -914,7 +962,7 @@ impl Router {
                 // 标准HTTP路由
                 if best_match.route_info.handler_id < self.http_handlers.len() {
                     let handler = &self.http_handlers[best_match.route_info.handler_id];
-                    let req_with_params = Self::set_path_params_to_request(req, best_match.params.clone());
+                    let req_with_params = Self::set_path_params_and_handler_to_request(req, best_match.params.clone(), best_match.route_info.python_handler_name.clone());
 
                     // 对于GET请求，先检查缓存
                     if method == hyper::Method::GET {

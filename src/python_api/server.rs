@@ -741,6 +741,7 @@ impl PyRouter {
         
         Ok(())
     }
+
     
     /// 添加分块传输路由
     /// 
@@ -797,7 +798,7 @@ impl PyRouter {
     /// 添加普通路由 - 队列桥接模式
     /// 
     /// 使用队列桥接模式而不是传统的同步调用，彻底避免 GIL 死锁问题
-    fn add_route(&mut self, method: &str, path: &str, handler: PyObject) -> PyResult<()> {
+    fn add_route(&mut self, method: &str, path: &str, handler: PyObject, python_handler_name: String) -> PyResult<()> {
         let method = match method.to_uppercase().as_str() {
             "GET" => Method::GET,
             "POST" => Method::POST,
@@ -825,8 +826,8 @@ impl PyRouter {
             http_handler.handle_request(req)
         };
         
-        // 使用普通路由注册
-        self.router.add_route(method.clone(), &path_pattern, handler_fn);
+        // 使用普通路由注册，传递python_handler_name
+        self.router.add_route_with_handler_name(method.clone(), &path_pattern, handler_fn, Some(python_handler_name));
         
         info!("✅ [PyRouter] 队列桥接路由注册成功: {} {}", method, path_pattern);
         Ok(())

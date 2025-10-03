@@ -160,15 +160,20 @@ def handle_product_price(request_data) -> dict:
     path_params = request_data.get('path_params', {})
     price_raw = path_params.get('price', '0')
 
+    # 🔍 添加调试信息
+    print(f"🐍 [Python DEBUG] handle_product_price: path={request_data.get('path')}, price_raw={price_raw}, path_params={path_params}")
+
     # 验证是否为浮点数
     try:
         price = float(price_raw)
         is_valid = True
         value_type = "float"
+        print(f"🐍 [Python DEBUG] 浮点数解析成功: {price_raw} -> {price}")
     except ValueError:
         price = 0.0
         is_valid = False
         value_type = "invalid"
+        print(f"🐍 [Python DEBUG] 浮点数解析失败: {price_raw}")
 
     response_data = {
         "type": "float_parameter",
@@ -210,6 +215,10 @@ def handle_mixed_params(request_data) -> dict:
     user_id_raw = path_params.get('user_id', '0')
     category = path_params.get('category', 'unknown')
     price_raw = path_params.get('price', '0')
+
+    # 🔍 添加调试信息
+    print(f"🐍 [Python DEBUG] handle_mixed_params: path={request_data.get('path')}, path_params={path_params}")
+    print(f"🐍 [Python DEBUG] 参数: user_id_raw={user_id_raw}, category={category}, price_raw={price_raw}")
 
     # 验证和转换参数
     try:
@@ -300,40 +309,36 @@ def create_app():
     # 混合参数 - 整数+路径 (用于负数+路径的测试)
     @app.json("/mixed/<int:user_id>/<path:file_path>")
     def handle_mixed_user_file_route(request_data, *path_args):
-        # 重新映射参数以适配测试期望
+        # 直接使用Rust层传递的path_params
         path_params = request_data.get('path_params', {})
         user_id = path_params.get('user_id', '0')
         file_path = path_params.get('file_path', '')
 
-        # 解析文件路径，模拟category和price
-        path_parts = file_path.split('/', 1)
-        category = path_parts[0] if len(path_parts) > 0 else ''
-        price_str = path_parts[1] if len(path_parts) > 1 else '0'
+        # 验证和转换参数
+        try:
+            user_id_parsed = int(user_id)
+            user_id_valid = True
+        except ValueError:
+            user_id_parsed = 0
+            user_id_valid = False
 
-        # 构造模拟的混合参数响应
+        # 直接返回正确的参数结构
         response_data = {
             "type": "mixed_parameters",
             "parameters": {
                 "user_id": {
                     "name": "user_id",
                     "raw_value": user_id,
-                    "parsed_value": int(user_id) if user_id.lstrip('-').isdigit() else 0,
-                    "type": "integer" if user_id.lstrip('-').isdigit() else "invalid",
-                    "is_valid": user_id.lstrip('-').isdigit(),
+                    "parsed_value": user_id_parsed,
+                    "type": "integer" if user_id_valid else "invalid",
+                    "is_valid": user_id_valid,
                     "constraint": "<int:user_id>"
                 },
-                "category": {
-                    "name": "category",
-                    "raw_value": category,
-                    "parsed_value": category,
+                "file_path": {
+                    "name": "file_path",
+                    "raw_value": file_path,
+                    "parsed_value": file_path,
                     "type": "String",
-                    "constraint": "<str:category>"
-                },
-                "price": {
-                    "name": "price",
-                    "raw_value": price_str,
-                    "parsed_value": price_str,
-                    "type": "String",  # 这里原来是路径的一部分，当作字符串处理
                     "is_valid": True,
                     "constraint": "<path:file_path>"
                 }

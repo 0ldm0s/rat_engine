@@ -37,6 +37,7 @@ pub async fn convert_hyper_to_http_request(req: Request<Incoming>) -> Result<Htt
         remote_addr: "127.0.0.1:0".to_string(),
         real_ip: "127.0.0.1".to_string(),
         path_params: std::collections::HashMap::new(),
+        python_handler_name: None,
     })
 }
 

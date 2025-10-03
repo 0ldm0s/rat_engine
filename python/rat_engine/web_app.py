@@ -97,6 +97,7 @@ class Route:
     def __init__(self, pattern: str, handler: Callable, methods: List[str]):
         self.pattern = pattern
         self.handler = handler
+        self.handler_name = handler.__name__ if hasattr(handler, '__name__') else str(handler)
         self.methods = [m.upper() for m in methods]
         self.regex, self.param_names = self._compile_pattern(pattern)
     
@@ -157,6 +158,25 @@ class Route:
                 params[name] = unquote(value)
         
         return params
+
+    def match_simple(self, path: str, method: str) -> bool:
+        """简单的路径和方法匹配（不需要参数匹配）"""
+        if method.upper() not in self.methods:
+            return False
+
+        # 简单的路径匹配：将路径参数替换为通配符
+        pattern = self.pattern
+        # 将 <type:name> 替换为 *
+        import re
+        simple_pattern = re.sub(r'<[^>]+>', '*', pattern)
+        # 将多个连续的*合并为一个
+        simple_pattern = re.sub(r'\*+', '*', simple_pattern)
+        # 转换为正则表达式
+        simple_pattern = simple_pattern.replace('*', '.*')
+        simple_pattern = '^' + simple_pattern + '$'
+
+        match = re.match(simple_pattern, path)
+        return match is not None
 
 
 class Middleware:
@@ -655,9 +675,17 @@ class RatApp:
                     f"严禁直接调用 router.add_route() 或 app._add_route() 方法！"
                 )
         
+        # 🔍 [DEBUG] 获取handler名称
+        handler_name = handler.__name__ if hasattr(handler, '__name__') else str(handler)
+        print(f"🐍 [PYTHON DEBUG] 注册路由:")
+        print(f"   规则: {rule}")
+        print(f"   方法: {methods}")
+        print(f"   Handler名称: {handler_name}")
+        print(f"   Handler函数: {handler}")
+
         route = Route(rule, handler, methods)
         self.routes.append(route)
-        
+
         # 标记有 HTTP 路由注册
         self._http_routes_registered = True
     
@@ -1077,6 +1105,10 @@ class RatApp:
         
         # 如果传入的是字典，转换为 HttpRequest 对象
         if isinstance(request_data, dict):
+            # 🔍 调试Python层接收到的path_params
+            path_params = request_data.get('path_params', {})
+            print(f"🐍 [Python DEBUG] web_app接收到path_params: {path_params} (类型: {type(path_params)}, 长度: {len(path_params) if path_params else 'N/A'})")
+
             request = HttpRequest(
                 method=request_data.get('method', 'GET'),
                 path=request_data.get('path', '/'),
@@ -1085,7 +1117,7 @@ class RatApp:
                 body=request_data.get('body', b''),
                 remote_addr=request_data.get('remote_addr', '127.0.0.1:0'),
                 real_ip=request_data.get('real_ip', '127.0.0.1'),
-                path_params=request_data.get('path_params', {})
+                path_params=path_params
             )
         else:
             request = request_data
@@ -1106,22 +1138,41 @@ class RatApp:
                     if isinstance(result, HttpResponse):
                         return self._apply_after_middleware(request, result)
                 
-                # 路由匹配
+                # 路由匹配 - 直接使用Rust层处理好的path_params和python_handler_name
+                print(f"🐍 [PYTHON DEBUG] 收到请求:")
+                print(f"   路径: {request.path}")
+                print(f"   方法: {request.method}")
+                print(f"   path_params: {request.path_params}")
+                print(f"   python_handler_name: {getattr(request, 'python_handler_name', 'Not Available')}")
+
+                # 检查必需的字段
+                python_handler_name = getattr(request, 'python_handler_name', None)
+                if not python_handler_name:
+                    print(f"🚨 [PYTHON ERROR] python_handler_name为空！")
+                    return self._handle_error(request, 500, "Internal server error: missing python_handler_name from Rust layer")
+
+                # 🔍 修复：path_params为空dict是正常的（比如首页路由），不应该报错
+                if request.path_params is None:
+                    print(f"🚨 [PYTHON ERROR] path_params为None！")
+                    return self._handle_error(request, 500, "Internal server error: path_params is None from Rust layer")
+
+                # 直接使用Rust层的数据
+                ctx.path_params = request.path_params
+
+                # 根据python_handler_name查找处理器
+                target_handler = None
                 for route in self.routes:
-                    params = route.match(request.path, request.method)
-                    if params is not None:
-                        # 🔧 [调试信息] 路由匹配调试 - 如需调试路由匹配问题，可取消注释以下行
-                # print(f"🔧 [PYTHON-DEBUG] 路由匹配成功: {route.pattern}")
-                # print(f"🔧 [PYTHON-DEBUG] 提取的参数: {params}")
-                # print(f"🔧 [PYTHON-DEBUG] 请求路径: {request.path}")
-                        ctx.path_params = params
-                        
-                        # 调用路由处理函数
-                        response = self._call_handler(route.handler, request, params)
-                        return self._apply_after_middleware(request, response)
-                
-                # 没有匹配的路由
-                return self._handle_error(request, 404, "Not Found")
+                    if route.handler_name == python_handler_name:
+                        target_handler = route.handler
+                        break
+
+                if not target_handler:
+                    print(f"🚨 [PYTHON ERROR] 找不到处理器: {python_handler_name}")
+                    return self._handle_error(request, 500, f"Handler not found: {python_handler_name}")
+
+                print(f"🔧 [PYTHON DEBUG] 使用处理器: {python_handler_name}")
+                response = self._call_handler(target_handler, request, request.path_params)
+                return self._apply_after_middleware(request, response)
         
         except Exception as e:
             return self._handle_exception(request, e)
@@ -1511,12 +1562,17 @@ class RatApp:
                             if debug:
                                 print(f"   📡 SSE Registered route: {method} {route.pattern}")
                         else:
-                            # 🔧 [调试信息] 路由注册调试 - 如需调试路由注册问题，可取消注释以下行
-                # print(f"🔧 [PYTHON-DEBUG] 注册普通路由: {method} {route.pattern}")
-                # print(f"🔧 [PYTHON-DEBUG] 处理器: {self._handle_request}")
-                            self._router.add_route(method, route.pattern, self._handle_request)
+                            # 🔍 [DEBUG] 打印路由注册信息
+                            print(f"🔧 [PYTHON DEBUG] 注册普通路由到Rust层:")
+                            print(f"   方法: {method}")
+                            print(f"   路径: {route.pattern}")
+                            print(f"   Handler名称: {route.handler_name}")
+                            print(f"   Handler函数: {route.handler}")
+
+                            # 🆕 使用新的add_route方法，传递python_handler_name
+                            self._router.add_route(method, route.pattern, self._handle_request, route.handler_name)
                             if debug:
-                                print(f"   🌐 HTTP Registered route: {method} {route.pattern}")
+                                print(f"   🌐 HTTP Registered route: {method} {route.pattern} (with handler: {route.handler_name})")
                 self._global_handler_registered = True
             
             # 使用新的 server 和 router 运行（非阻塞模式）
