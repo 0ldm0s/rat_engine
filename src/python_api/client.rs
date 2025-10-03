@@ -686,7 +686,7 @@ impl ClientManager {
         let http_delegated_handlers = Arc::new(RwLock::new(HashMap::new()));
         let grpc_unary_handlers = Arc::new(RwLock::new(HashMap::new()));
 
-        println!("🚀 [CLIENT_MANAGER] 启动工作线程...");
+        rat_logger::info!("🚀 [CLIENT_MANAGER] 启动工作线程...");
         // 启动工作线程
         let worker_handle = Self::start_worker(
             grpc_client.clone(),
@@ -724,13 +724,13 @@ impl ClientManager {
         grpc_unary_handlers: Arc<RwLock<HashMap<String, PythonGrpcUnaryHandler>>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            println!("🚀 [WORKER_THREAD] PyO3客户端工作线程启动");
-            println!("📋 [WORKER_THREAD] gRPC客户端: {}", if grpc_client.is_some() { "✅ 已启用" } else { "❌ 已禁用" });
-            println!("📋 [WORKER_THREAD] HTTP客户端: {}", if http_client.is_some() { "✅ 已启用" } else { "❌ 已禁用" });
+            rat_logger::info!("🚀 [WORKER_THREAD] PyO3客户端工作线程启动");
+            rat_logger::info!("📋 [WORKER_THREAD] gRPC客户端: {}", if grpc_client.is_some() { "✅ 已启用" } else { "❌ 已禁用" });
+            rat_logger::info!("📋 [WORKER_THREAD] HTTP客户端: {}", if http_client.is_some() { "✅ 已启用" } else { "❌ 已禁用" });
             
             while !shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(request) = request_queue.pop() {
-                    println!("🔄 [WORKER_THREAD] 收到请求类型: {:?}", std::mem::discriminant(&request));
+                    rat_logger::debug!("🔄 [WORKER_THREAD] 收到请求类型: {:?}", std::mem::discriminant(&request));
                     Self::handle_request(
                         request,
                         &grpc_client,
@@ -760,7 +760,7 @@ impl ClientManager {
         http_delegated_handlers: &Arc<RwLock<HashMap<String, PythonHttpDelegatedHandler>>>,
         grpc_unary_handlers: &Arc<RwLock<HashMap<String, PythonGrpcUnaryHandler>>>,
     ) {
-        println!("🔧 [HANDLE_REQUEST] 开始处理请求类型: {:?}", std::mem::discriminant(&request));
+        rat_logger::debug!("🔧 [HANDLE_REQUEST] 开始处理请求类型: {:?}", std::mem::discriminant(&request));
         let start_time = std::time::Instant::now();
         
         match request {
@@ -789,12 +789,12 @@ impl ClientManager {
                 let _ = response_tx.send(result);
             },
             ClientRequest::HttpGet { url, headers, response_tx } => {
-                println!("🌐 [HANDLE_REQUEST] 处理HTTP GET请求: {}", url);
+                rat_logger::info!("🌐 [HANDLE_REQUEST] 处理HTTP GET请求: {}", url);
                 let result = Self::handle_http_get_request(
                     http_client, &url, headers
                 ).await;
                 let elapsed = start_time.elapsed();
-                println!("⏱️ [HANDLE_REQUEST] HTTP GET请求处理完成，耗时: {:?}", elapsed);
+                rat_logger::info!("⏱️ [HANDLE_REQUEST] HTTP GET请求处理完成，耗时: {:?}", elapsed);
                 let _ = response_tx.send(result);
             },
             ClientRequest::HttpPost { url, body, headers, response_tx } => {
@@ -858,13 +858,12 @@ impl ClientManager {
                 let _ = response_tx.send(result);
             },
             ClientRequest::Shutdown => {
-                println!("📥 [HANDLE_REQUEST] 收到关闭指令");
-                info!("📥 [PyO3客户端] 收到关闭指令");
+                rat_logger::info!("📥 [HANDLE_REQUEST] 收到关闭指令");
             },
         }
         
         let total_elapsed = start_time.elapsed();
-        println!("✅ [HANDLE_REQUEST] 请求处理完成，总耗时: {:?}", total_elapsed);
+        rat_logger::info!("✅ [HANDLE_REQUEST] 请求处理完成，总耗时: {:?}", total_elapsed);
     }
 
     /// 处理 gRPC 一元请求

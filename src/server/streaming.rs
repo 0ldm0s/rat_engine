@@ -204,24 +204,24 @@ impl SseResponse {
 
     /// 发送 SSE 事件
     pub fn send_event(&self, event: &str, data: &str) -> Result<(), String> {
-        println!("Sending SSE event: type={}, data={}", event, data);
+        rat_logger::debug!("Sending SSE event: type={}, data={}", event, data);
         let formatted = format!("event: {}\ndata: {}\n\n\n", event, data);
         self.sender
             .send(Ok(Frame::data(Bytes::from(formatted))))
             .map_err(|e| {
-                println!("Failed to send SSE event: {:?}", e);
+                rat_logger::debug!("Failed to send SSE event: {:?}", e);
                 "Failed to send SSE event".to_string()
             })
     }
 
     /// 发送简单数据
     pub fn send_data(&self, data: &str) -> Result<(), String> {
-        println!("Sending SSE data: {}", data);
+        rat_logger::debug!("Sending SSE data: {}", data);
         let formatted = format!("data: {}\n\n\n", data);
         self.sender
             .send(Ok(Frame::data(Bytes::from(formatted))))
             .map_err(|e| {
-                println!("Failed to send SSE data: {:?}", e);
+                rat_logger::debug!("Failed to send SSE data: {:?}", e);
                 "Failed to send SSE data".to_string()
             })
     }

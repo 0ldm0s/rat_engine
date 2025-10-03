@@ -482,7 +482,7 @@ impl ClientConnectionPool {
                 
                 // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
                 tls_config.alpn_protocols = vec![b"h2".to_vec()];
-                println!("🔍 [客户端-mTLS] 配置的 ALPN 协议: {:?}", tls_config.alpn_protocols);
+                rat_logger::debug!("🔍 [客户端-mTLS] 配置的 ALPN 协议: {:?}", tls_config.alpn_protocols);
                 
                 tls_config
             } else if self.config.development_mode {

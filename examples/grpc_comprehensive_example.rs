@@ -744,9 +744,9 @@ impl FileDownloadHandler {
                         };
                         
                         // 序列化 DownloadChunk 到 data 字段
-                        println!("DEBUG: [服务端] 准备序列化 DownloadChunk - chunk_index: {}, is_last: {}, data_len: {}", 
+                        println!("DEBUG: [服务端] 准备序列化 DownloadChunk - chunk_index: {}, is_last: {}, data_len: {}",
                                 download_chunk.chunk_index, download_chunk.is_last, download_chunk.data.len());
-                        
+
                         match GrpcCodec::encode(&download_chunk) {
                             Ok(serialized_chunk) => {
                                 println!("DEBUG: [服务端] DownloadChunk 序列化成功，序列化后大小: {} bytes", serialized_chunk.len());
