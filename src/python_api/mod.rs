@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 use crate::utils::logger::{LogConfig, LogLevel, LogOutput, Logger};
+use rat_logger::{debug, info, warn, error, trace, emergency, startup_log, flush_logs};
 use std::path::PathBuf;
 
 // 子模块
@@ -113,6 +114,64 @@ fn _configure_logging(
     Ok(())
 }
 
+// RAT Logger 包装函数 - 为Python提供日志功能
+
+/// RAT debug 日志函数
+#[pyfunction]
+fn rat_debug(message: String) -> PyResult<()> {
+    debug!("{}", message);
+    Ok(())
+}
+
+/// RAT info 日志函数
+#[pyfunction]
+fn rat_info(message: String) -> PyResult<()> {
+    info!("{}", message);
+    Ok(())
+}
+
+/// RAT warn 日志函数
+#[pyfunction]
+fn rat_warn(message: String) -> PyResult<()> {
+    warn!("{}", message);
+    Ok(())
+}
+
+/// RAT error 日志函数
+#[pyfunction]
+fn rat_error(message: String) -> PyResult<()> {
+    error!("{}", message);
+    Ok(())
+}
+
+/// RAT trace 日志函数
+#[pyfunction]
+fn rat_trace(message: String) -> PyResult<()> {
+    trace!("{}", message);
+    Ok(())
+}
+
+/// RAT emergency 日志函数
+#[pyfunction]
+fn rat_emergency(message: String) -> PyResult<()> {
+    emergency!("{}", message);
+    Ok(())
+}
+
+/// RAT startup_log 日志函数
+#[pyfunction]
+fn rat_startup_log(message: String) -> PyResult<()> {
+    startup_log!("{}", message);
+    Ok(())
+}
+
+/// RAT flush_logs 日志函数
+#[pyfunction]
+fn rat_flush_logs() -> PyResult<()> {
+    flush_logs!();
+    Ok(())
+}
+
 /// 获取 rat_memcache 版本信息
 ///
 /// 通过读取依赖项的 Cargo.toml 文件来获取版本信息，避免硬编码
@@ -182,6 +241,16 @@ pub fn register_python_api_module(py: Python, parent_module: &PyModule) -> PyRes
     parent_module.add_function(wrap_pyfunction!(engine_builder::create_builder, parent_module)?)?;
     
     // 注意：configure_logging 函数已移除，现在通过 Server.configure_logging(json_string) 配置
+
+    // 注册 rat_logger 函数
+    parent_module.add_function(wrap_pyfunction!(rat_debug, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_info, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_warn, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_error, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_trace, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_emergency, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_startup_log, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(rat_flush_logs, parent_module)?)?;
 
     // 注册版本信息函数
     parent_module.add_function(wrap_pyfunction!(get_rat_memcache_version, parent_module)?)?;
