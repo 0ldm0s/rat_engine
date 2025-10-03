@@ -420,7 +420,7 @@ impl RatEngineBuilder {
     
     /// 创建一个新的Router
     pub fn create_router(&self) -> crate::server::Router {
-        crate::server::Router::new()
+        crate::server::Router::new_with_config(self.server_config.clone())
     }
     
     /// 创建并配置Router的便捷方法
