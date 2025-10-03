@@ -41,6 +41,8 @@ pub struct HttpRequest {
     pub source: RequestSource,
     /// 路径参数（由路由器填充）
     pub path_params: HashMap<String, String>,
+    /// Python处理器名字（仅用于Python集成，避免Python层二次路由匹配）
+    pub python_handler_name: Option<String>,
 }
 
 impl HttpRequest {
@@ -83,6 +85,7 @@ impl HttpRequest {
             remote_addr,
             source,
             path_params: HashMap::new(),
+            python_handler_name: None,
         })
     }
 
@@ -103,6 +106,7 @@ impl HttpRequest {
             remote_addr,
             source: RequestSource::Http2,
             path_params: HashMap::new(),
+            python_handler_name: None,
         }
     }
 
@@ -472,5 +476,15 @@ impl HttpRequest {
     /// 获取所有路径参数（只读）
     pub fn path_params(&self) -> &HashMap<String, String> {
         &self.path_params
+    }
+
+    /// 设置Python处理器名字（由路由器内部使用）
+    pub(crate) fn set_python_handler_name(&mut self, handler_name: Option<String>) {
+        self.python_handler_name = handler_name;
+    }
+
+    /// 获取Python处理器名字（只读）
+    pub fn python_handler_name(&self) -> Option<&String> {
+        self.python_handler_name.as_ref()
     }
 }

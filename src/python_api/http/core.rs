@@ -167,6 +167,10 @@ pub struct HttpRequest {
     /// 路径参数 (从动态路由中提取的参数)
     #[pyo3(get)]
     pub path_params: HashMap<String, String>,
+
+    /// Python处理器名字 (仅用于Python集成，避免Python层二次路由匹配)
+    #[pyo3(get)]
+    pub python_handler_name: Option<String>,
 }
 
 #[pymethods]
@@ -181,7 +185,8 @@ impl HttpRequest {
         body: Option<Vec<u8>>,
         remote_addr: Option<String>,
         real_ip: Option<String>,
-        path_params: Option<HashMap<String, String>>
+        path_params: Option<HashMap<String, String>>,
+        python_handler_name: Option<String>
     ) -> Self {
         Self {
             method: method.unwrap_or_else(|| "GET".to_string()),
@@ -192,6 +197,7 @@ impl HttpRequest {
             remote_addr: remote_addr.unwrap_or_else(|| "127.0.0.1:8080".to_string()),
             real_ip: real_ip.unwrap_or_else(|| "127.0.0.1".to_string()),
             path_params: path_params.unwrap_or_default(),
+            python_handler_name,
         }
     }
     
