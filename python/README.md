@@ -446,6 +446,207 @@ app.run("127.0.0.1", 3000, debug=True)
 app.run("127.0.0.1", 3000, metrics=True)
 ```
 
+## 📝 RAT Logger 集成
+
+RAT Engine 提供了与底层 Rust 日志系统的完整集成，支持多种日志级别和统一的日志格式。
+
+### 🔧 基础使用
+
+```python
+from rat_engine import RatApp, rat_debug, rat_info, rat_warn, rat_error, rat_startup_log
+
+app = RatApp(name="my_app")
+
+# 配置日志（重要！必须在启动前配置）
+app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
+# 在请求处理器中使用日志
+@app.html("/")
+def home(request_data):
+    rat_info("🐍 [PYTHON] 处理主页请求")
+    return "<h1>Hello World</h1>"
+
+@app.json("/api/test")
+def api_test(request_data):
+    rat_debug("🐍 [PYTHON] 处理API测试请求")
+    return {"status": "ok", "message": "API working"}
+```
+
+### 📋 支持的日志级别
+
+| 函数 | 级别 | 用途 |
+|------|------|------|
+| `rat_debug(message)` | DEBUG | 调试信息，开发时使用 |
+| `rat_info(message)` | INFO | 一般信息，正常运行状态 |
+| `rat_warn(message)` | WARN | 警告信息，需要注意但不影响运行 |
+| `rat_error(message)` | ERROR | 错误信息，影响正常运行 |
+| `rat_startup_log(message)` | STARTUP | 启动日志，应用启动过程 |
+| `rat_emergency(message)` | EMERGENCY | 紧急情况，需要立即处理 |
+| `rat_trace(message)` | TRACE | 更详细的跟踪信息 |
+| `rat_flush_logs()` | - | 强制刷新日志缓冲区 |
+
+### ⚠️ **重要使用限制**
+
+#### 🚨 初始化阶段的限制
+
+**RAT Logger 在应用完全初始化之前无法正常工作。** 这是一个设计限制，因为日志系统需要在 Rust 层完全启动后才能运行。
+
+```python
+def create_app():
+    # ❌ 这些调用在初始化阶段不会输出
+    rat_startup_log("🐍 [PYTHON] 🚀 创建 RatApp...")  # 不会输出
+    rat_info("🐍 [PYTHON] 📡 配置应用...")        # 不会输出
+
+    app = RatApp(name="my_app")
+
+    # ✅ 配置日志（这是关键步骤）
+    app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
+    # ✅ 初始化完成后的日志调用正常工作
+    rat_info("🐍 [PYTHON] ✅ 应用初始化完成")  # 会输出
+
+    return app
+```
+
+#### 📝 初始化前必须输出的内容
+
+对于必须在初始化之前输出的信息，请使用 `print()` 语句：
+
+```python
+def create_app():
+    # ✅ 初始化前必须使用 print
+    print("🐍 [PYTHON] ===== 开始应用初始化 =====")
+    print("🐍 [PYTHON] 🚀 创建 RatApp...")
+
+    app = RatApp(name="my_app")
+
+    # ✅ 配置日志
+    app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
+    # ✅ 现在可以使用 rat_logger
+    rat_info("🐍 [PYTHON] 📡 RatApp 创建完成")
+
+    return app
+```
+
+### 🎯 **最佳实践**
+
+#### 1. **推荐的日志使用模式**
+
+```python
+from rat_engine import RatApp, rat_info, rat_debug, rat_error
+
+def create_app():
+    # 初始化阶段 - 使用 print
+    print("🐍 [PYTHON] 开始创建应用...")
+
+    app = RatApp(name="my_app")
+
+    # 配置日志系统
+    app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
+    # 日志系统可用后的日志
+    rat_info("🐍 [PYTHON] 应用创建完成")
+
+    return app
+
+# 在请求处理器中
+@app.html("/")
+def handler(request_data):
+    rat_info("🐍 [PYTHON] 处理请求")
+    rat_debug(f"🐍 [PYTHON] 请求详情: {request_data}")
+
+    try:
+        # 业务逻辑
+        result = process_request(request_data)
+        rat_info("🐍 [PYTHON] 请求处理成功")
+        return result
+
+    except Exception as e:
+        rat_error(f"🐍 [PYTHON] 请求处理失败: {e}")
+        raise
+```
+
+#### 2. **日志标识建议**
+
+为了清晰区分 Python 侧和 Rust 侧的日志，建议使用统一的标识：
+
+```python
+# ✅ 推荐：使用统一的 Python 标识
+rat_info("🐍 [PYTHON] 处理用户请求")
+rat_debug("🐍 [PYTHON] 调用数据库查询")
+rat_error("🐍 [PYTHON] 数据库连接失败")
+
+# 这样在日志输出中可以清晰看到：
+# 🐍 [PYTHON] 处理用户请求     <- Python 侧日志
+# 🔍 [服务端] 开始协议检测      <- Rust 侧日志
+# 🐍 [Rust DEBUG] 路由匹配成功   <- Rust 侧调试日志
+```
+
+#### 3. **配置推荐**
+
+```python
+# 开发环境配置
+app.configure_logging(
+    level="debug",           # 开发时使用 debug 级别
+    enable_access_log=True,  # 记录访问日志
+    enable_error_log=True    # 记录错误日志
+)
+
+# 生产环境配置
+app.configure_logging(
+    level="info",            # 生产环境使用 info 级别
+    enable_access_log=False, # 可选择不记录访问日志
+    enable_error_log=True    # 必须记录错误日志
+)
+```
+
+### 🔍 **日志输出示例**
+
+正常运行的日志输出：
+
+```
+[RAT_ENGINE] 使用 Rust 实现 v1.0.6                    <- Rust 启动日志
+🌐 RAT Engine server running on 127.0.0.1:8082       <- Rust 服务器日志
+🐍 [PYTHON] 处理主页请求                             <- Python 日志 (有颜色标识)
+🐍 [PYTHON] 处理API测试请求                           <- Python 日志 (有颜色标识)
+📊 127.0.0.1 GET / 200 1ms                          <- Rust 访问日志
+```
+
+### 📚 **故障排除**
+
+#### 问题：rat_logger 调用没有输出
+
+**可能原因：**
+1. 忘记调用 `app.configure_logging()`
+2. 在应用初始化完成前调用
+3. 日志级别设置过高
+
+**解决方案：**
+```python
+# 确保在创建路由前配置日志
+app = RatApp(name="my_app")
+app.configure_logging(level="debug", enable_access_log=True, enable_error_log=True)
+
+# 然后定义路由
+@app.route("/")
+def handler():
+    rat_info("这条日志会正常输出")
+    return "Hello"
+```
+
+#### 问题：日志级别过滤
+
+如果某些日志没有显示，检查日志级别设置：
+
+```python
+# 确保级别足够低以显示所有日志
+app.configure_logging(level="debug", ...)  # 显示 debug 及以上级别
+
+# 如果只需要重要信息
+app.configure_logging(level="info", ...)   # 只显示 info 及以上级别
+```
+
 ## 🧪 完整示例
 
 查看 `examples/streaming_demo.py` 获取完整的功能演示：
