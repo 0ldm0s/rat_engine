@@ -677,11 +677,11 @@ class RatApp:
         
         # 🔍 [DEBUG] 获取handler名称
         handler_name = handler.__name__ if hasattr(handler, '__name__') else str(handler)
-        print(f"🐍 [PYTHON DEBUG] 注册路由:")
-        print(f"   规则: {rule}")
-        print(f"   方法: {methods}")
-        print(f"   Handler名称: {handler_name}")
-        print(f"   Handler函数: {handler}")
+        # print(f"🐍 [PYTHON DEBUG] 注册路由:")
+        # print(f"   规则: {rule}")
+        # print(f"   方法: {methods}")
+        # print(f"   Handler名称: {handler_name}")
+        # print(f"   Handler函数: {handler}")
 
         route = Route(rule, handler, methods)
         self.routes.append(route)
@@ -1107,7 +1107,7 @@ class RatApp:
         if isinstance(request_data, dict):
             # 🔍 调试Python层接收到的path_params
             path_params = request_data.get('path_params', {})
-            print(f"🐍 [Python DEBUG] web_app接收到path_params: {path_params} (类型: {type(path_params)}, 长度: {len(path_params) if path_params else 'N/A'})")
+            # print(f"🐍 [Python DEBUG] web_app接收到path_params: {path_params} (类型: {type(path_params)}, 长度: {len(path_params) if path_params else 'N/A'})")
 
             request = HttpRequest(
                 method=request_data.get('method', 'GET'),
@@ -1139,11 +1139,11 @@ class RatApp:
                         return self._apply_after_middleware(request, result)
                 
                 # 路由匹配 - 直接使用Rust层处理好的path_params和python_handler_name
-                print(f"🐍 [PYTHON DEBUG] 收到请求:")
-                print(f"   路径: {request.path}")
-                print(f"   方法: {request.method}")
-                print(f"   path_params: {request.path_params}")
-                print(f"   python_handler_name: {getattr(request, 'python_handler_name', 'Not Available')}")
+                # print(f"🐍 [PYTHON DEBUG] 收到请求:")
+                # print(f"   路径: {request.path}")
+                # print(f"   方法: {request.method}")
+                # print(f"   path_params: {request.path_params}")
+                # print(f"   python_handler_name: {getattr(request, 'python_handler_name', 'Not Available')}")
 
                 # 检查必需的字段
                 python_handler_name = getattr(request, 'python_handler_name', None)
@@ -1170,7 +1170,7 @@ class RatApp:
                     print(f"🚨 [PYTHON ERROR] 找不到处理器: {python_handler_name}")
                     return self._handle_error(request, 500, f"Handler not found: {python_handler_name}")
 
-                print(f"🔧 [PYTHON DEBUG] 使用处理器: {python_handler_name}")
+                # print(f"🔧 [PYTHON DEBUG] 使用处理器: {python_handler_name}")
                 response = self._call_handler(target_handler, request, request.path_params)
                 return self._apply_after_middleware(request, response)
         
@@ -1469,36 +1469,41 @@ class RatApp:
                         if msg_type == 'connection_established':
                             connection_id = message_info.get('connection_id')
                             protocol = message_info.get('protocol')
-                            print(f"🔗 新连接建立: {connection_id} (协议: {protocol})")
+                            # print(f"🔗 新连接建立: {connection_id} (协议: {protocol})")
                         elif msg_type == 'connection_closed':
                             connection_id = message_info.get('connection_id')
                             reason = message_info.get('reason')
-                            print(f"🔌 连接关闭: {connection_id} (原因: {reason})")
+                            # print(f"🔌 连接关闭: {connection_id} (原因: {reason})")
                         elif msg_type == 'request_received':
                             connection_id = message_info.get('connection_id')
                             request_id = message_info.get('request_id')
                             method = message_info.get('method')
                             path = message_info.get('path')
-                            print(f"📨 收到 HTTP 请求: {method} {path} (连接: {connection_id}, 请求: {request_id})")
+                            # print(f"📨 收到 HTTP 请求: {method} {path} (连接: {connection_id}, 请求: {request_id})")
                 
                 # 初始化 HTTP 队列桥接适配器
                 if hasattr(self._router, 'initialize_http_queue_bridge'):
                     self._router.initialize_http_queue_bridge(default_http_message_handler)
                     self._http_bridge_initialized = True
                     if debug:
-                        print("✅ 检测到 HTTP 路由，HTTP 队列桥接适配器已自动初始化")
+                        # print("✅ 检测到 HTTP 路由，HTTP 队列桥接适配器已自动初始化")
+                        pass
                 else:
                     if debug:
-                        print("⚠️ 当前版本不支持 HTTP 队列桥接，使用标准模式")
+                        # print("⚠️ 当前版本不支持 HTTP 队列桥接，使用标准模式")
+                        pass
             except Exception as e:
                 if debug:
-                    print(f"⚠️ HTTP 队列桥接适配器初始化失败: {e}")
-                    print("   将使用标准模式运行")
+                    # print(f"⚠️ HTTP 队列桥接适配器初始化失败: {e}")
+                    # print("   将使用标准模式运行")
+                    pass
                 # 即使初始化失败也继续运行，使用标准模式
         elif self._http_routes_registered and debug:
-            print("ℹ️ HTTP 队列桥接适配器已初始化")
+            # print("ℹ️ HTTP 队列桥接适配器已初始化")
+            pass
         elif not self._http_routes_registered and debug:
-            print("ℹ️ 未检测到 HTTP 路由，跳过 HTTP 队列桥接初始化")
+            # print("ℹ️ 未检测到 HTTP 路由，跳过 HTTP 队列桥接初始化")
+            pass
         
         # 自动初始化 gRPC 队列桥接适配器（如果有 gRPC 路由注册）
         if self._grpc_routes_registered and not self._grpc_bridge_initialized:
@@ -1508,19 +1513,24 @@ class RatApp:
                     self.main_thread.initialize_queue_bridge()
                     self._grpc_bridge_initialized = True
                     if debug:
-                        print("✅ 检测到 gRPC 路由，gRPC 队列桥接适配器已自动初始化")
+                        # print("✅ 检测到 gRPC 路由，gRPC 队列桥接适配器已自动初始化")
+                        pass
                 else:
                     if debug:
-                        print("⚠️ main_thread 未初始化，无法初始化 gRPC 队列桥接适配器")
+                        # print("⚠️ main_thread 未初始化，无法初始化 gRPC 队列桥接适配器")
+                        pass
             except Exception as e:
                 if debug:
-                    print(f"⚠️ gRPC 队列桥接适配器初始化失败: {e}")
-                    print("   请确保在使用 gRPC 功能前正确配置队列桥接")
+                    # print(f"⚠️ gRPC 队列桥接适配器初始化失败: {e}")
+                    # print("   请确保在使用 gRPC 功能前正确配置队列桥接")
+                    pass
                 # 即使初始化失败也继续运行，让用户手动处理
         elif self._grpc_routes_registered and debug:
-            print("ℹ️ gRPC 队列桥接适配器已初始化")
+            # print("ℹ️ gRPC 队列桥接适配器已初始化")
+            pass
         elif not self._grpc_routes_registered and debug:
-            print("ℹ️ 未检测到 gRPC 路由，跳过 gRPC 队列桥接初始化")
+            # print("ℹ️ 未检测到 gRPC 路由，跳过 gRPC 队列桥接初始化")
+            pass
         
         # 设置优雅退出机制（仅在阻塞模式下）
         if blocking:
@@ -1563,11 +1573,12 @@ class RatApp:
                                 print(f"   📡 SSE Registered route: {method} {route.pattern}")
                         else:
                             # 🔍 [DEBUG] 打印路由注册信息
-                            print(f"🔧 [PYTHON DEBUG] 注册普通路由到Rust层:")
-                            print(f"   方法: {method}")
-                            print(f"   路径: {route.pattern}")
-                            print(f"   Handler名称: {route.handler_name}")
-                            print(f"   Handler函数: {route.handler}")
+                            if debug:
+                                print(f"🔧 [PYTHON DEBUG] 注册普通路由到Rust层:")
+                                print(f"   方法: {method}")
+                                print(f"   路径: {route.pattern}")
+                                print(f"   Handler名称: {route.handler_name}")
+                                print(f"   Handler函数: {route.handler}")
 
                             # 🆕 使用新的add_route方法，传递python_handler_name
                             self._router.add_route(method, route.pattern, self._handle_request, route.handler_name)
