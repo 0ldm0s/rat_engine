@@ -617,7 +617,7 @@ async fn handle_tls_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    use tokio_rustls::{TlsAcceptor, rustls::ServerConfig as RustlsServerConfig};
+    use tokio_openssl::SslStream;
     
     // 获取证书管理器
     let cert_manager = cert_manager
@@ -632,12 +632,25 @@ where
     };
     
     // 创建 TLS 接受器
-    let acceptor = TlsAcceptor::from(server_config);
+    let acceptor = server_config.as_ref().clone();
     
     info!("🔐 [服务端] 开始 TLS 握手: {}", remote_addr);
     
-    // 进行 TLS 握手
-    let tls_stream = acceptor.accept(stream).await
+    // 进行 TLS 握手 - 使用 tokio-openssl 的异步接口
+    let ssl = openssl::ssl::Ssl::new(acceptor.context())
+        .map_err(|e| {
+            error!("❌ [服务端] 创建 SSL 失败: {}", e);
+            format!("创建 SSL 失败: {}", e)
+        })?;
+
+    let tls_stream = SslStream::new(ssl, stream)
+        .map_err(|e| {
+            error!("❌ [服务端] 创建 SSL 流失败: {}", e);
+            format!("创建 SSL 流失败: {}", e)
+        })?;
+
+    let mut tls_stream = tls_stream;
+    Pin::new(&mut tls_stream).do_handshake().await
         .map_err(|e| {
             error!("❌ [服务端] TLS 握手失败: {}", e);
             format!("TLS 握手失败: {}", e)
@@ -646,7 +659,7 @@ where
     info!("✅ [服务端] TLS 握手成功: {}", remote_addr);
     
     // 直接使用 ALPN 协商结果进行路由，无需重复协议检测
-    let negotiated_protocol = tls_stream.get_ref().1.alpn_protocol();
+    let negotiated_protocol = tls_stream.ssl().selected_alpn_protocol();
     let grpc_methods = router.list_grpc_methods();
     let has_grpc_methods = !grpc_methods.is_empty();
     
@@ -693,7 +706,7 @@ where
 
 /// 处理 HTTP/2 over TLS 连接
 async fn handle_h2_tls_connection(
-    tls_stream: tokio_rustls::server::TlsStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
+    tls_stream: tokio_openssl::SslStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
     remote_addr: SocketAddr,
     router: Arc<Router>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -745,7 +758,7 @@ async fn handle_h2_tls_connection(
 
 /// 处理 HTTP/1.1 over TLS 连接
 async fn handle_http1_tls_connection(
-    tls_stream: tokio_rustls::server::TlsStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
+    tls_stream: tokio_openssl::SslStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
     remote_addr: SocketAddr,
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
