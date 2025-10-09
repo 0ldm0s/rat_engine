@@ -51,10 +51,11 @@ pub use http_body_util::{Full, Empty, BodyExt};
 // 导出客户端相关类型
 #[cfg(feature = "client")]
 pub use client::{
-    RatHttpClient, RatHttpClientBuilder, RatGrpcClient, RatGrpcClientBuilder,
+    // RatHttpClient, RatHttpClientBuilder,  // 已移除HTTP客户端，只保留gRPC客户端
+    RatGrpcClient, RatGrpcClientBuilder,
     GrpcRequest, GrpcResponse, GrpcCompressionMode,
     GrpcStreamResponse, GrpcBidirectionalStream,
-    RatHttpResponse, HttpMethod, HttpStatusCode, HttpHeaders, HttpRequestBuilder,
+    // RatHttpResponse, HttpMethod, HttpStatusCode, HttpHeaders, HttpRequestBuilder,  // 已移除HTTP客户端，只保留gRPC客户端
     download_metadata::{DownloadMetadataManager, DownloadMetadata, ChunkInfo, DownloadStatus},
     connection_pool::ClientConnectionPool,
 };
