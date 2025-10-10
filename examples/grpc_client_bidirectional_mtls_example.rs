@@ -26,37 +26,30 @@ use rat_engine::server::cert_manager::{CertificateManager, CertManagerConfig};
 use rat_engine::utils::logger::{info, warn, debug, error};
 use rat_engine::{RatEngine, ServerConfig, Router};
 use std::future::Future;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::fs;
 
-/// 加载证书文件
-fn load_certificates(cert_path: &str) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
-    let cert_file = fs::read(cert_path)?;
-    let mut cert_slice = cert_file.as_slice();
-    let cert_iter = certs(&mut cert_slice);
-    let certificates = cert_iter
-        .collect::<Result<Vec<_>, _>>()?;
-    
-    if certificates.is_empty() {
+/// 加载证书文件 - 使用OpenSSL格式
+fn load_certificates(cert_path: &str) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
+    let cert_pem = fs::read_to_string(cert_path)?;
+
+    if cert_pem.is_empty() {
         return Err(format!("证书文件 {} 为空", cert_path).into());
     }
-    
-    Ok(certificates.into_iter().map(CertificateDer::from).collect())
+
+    // 直接返回PEM格式的内容，OpenSSL可以处理
+    Ok(vec![cert_pem.into_bytes()])
 }
 
-/// 加载私钥文件
-fn load_private_key(key_path: &str) -> Result<PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
-    let key_file = fs::read(key_path)?;
-    let mut key_slice = key_file.as_slice();
-    let key_iter = pkcs8_private_keys(&mut key_slice);
-    let mut keys = key_iter.collect::<Result<Vec<_>, _>>()?;
-    
-    if keys.is_empty() {
+/// 加载私钥文件 - 使用OpenSSL格式
+fn load_private_key(key_path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let key_pem = fs::read_to_string(key_path)?;
+
+    if key_pem.is_empty() {
         return Err(format!("私钥文件 {} 为空", key_path).into());
     }
-    
-    Ok(PrivateKeyDer::from(keys.remove(0)))
+
+    // 直接返回PEM格式的内容，OpenSSL可以处理
+    Ok(key_pem.into_bytes())
 }
 
 /// 聊天消息类型
