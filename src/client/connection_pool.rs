@@ -351,9 +351,10 @@ impl ClientConnectionPool {
                     .map_err(|e| RatError::TlsError(format!("设置客户端私钥失败: {}", e)))?;
 
                 // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-                ssl_builder.set_alpn_protos(b"\x02h2")?;
+                ssl_builder.set_alpn_protos(b"\x02h2")
+                    .map_err(|e| RatError::TlsError(format!("设置 ALPN 协议失败: {}", e)))?;
+                println!("[连接池ALPN调试] mTLS 模式设置 ALPN 协议: h2");
 
-    
                 ssl_builder.build()
             } else if self.config.development_mode {
                 // 开发模式：跳过证书验证，无客户端证书
@@ -362,8 +363,12 @@ impl ClientConnectionPool {
                 let mut ssl_builder = SslConnector::builder(SslMethod::tls())
                     .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
 
+                // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+                ssl_builder.set_alpn_protos(b"\x02h2")
+                    .map_err(|e| RatError::TlsError(format!("设置 ALPN 协议失败: {}", e)))?;
+                println!("[连接池ALPN调试] 开发模式设置 ALPN 协议: h2");
+
                 ssl_builder.set_verify(SslVerifyMode::NONE);
-                ssl_builder.set_alpn_protos(b"\x02h2")?;
 
                 // 开发模式下保持标准协议版本，仅跳过证书验证
 
@@ -373,8 +378,12 @@ impl ClientConnectionPool {
                 let mut ssl_builder = SslConnector::builder(SslMethod::tls())
                     .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
 
+                // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+                ssl_builder.set_alpn_protos(b"\x02h2")
+                    .map_err(|e| RatError::TlsError(format!("设置 ALPN 协议失败: {}", e)))?;
+                println!("[连接池ALPN调试] 标准模式设置 ALPN 协议: h2");
+
                 ssl_builder.set_verify(SslVerifyMode::PEER);
-                ssl_builder.set_alpn_protos(b"\x02h2")?;
 
                 ssl_builder.build()
             };
@@ -391,36 +400,6 @@ impl ClientConnectionPool {
 
             // 调试：检查当前 SSL 对象的 ALPN 协议（握手前）
             println!("[客户端调试] 握手前 SSL 对象的 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-
-            // 尝试直接在 SSL 对象上设置 ALPN 协议
-            // 首先尝试使用 set_alpn_protos 方法
-            match ssl.set_alpn_protos(b"\x02h2") {
-                Ok(_) => {
-                    println!("[客户端调试] SSL 对象 ALPN 协议已显式设置");
-                    println!("[客户端调试] 设置后 SSL 对象的 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-                }
-                Err(e) => {
-                    println!("[客户端调试] SSL 对象 set_alpn_protos 失败: {}, 尝试其他方法", e);
-
-                    // 如果直接设置失败，尝试使用 SslConnector 重新创建
-                    println!("[客户端调试] 尝试重新创建带有 ALPN 的 SSL 对象");
-
-                    // 在 SslConnector Builder 中再次确认 ALPN 设置
-                    drop(ssl); // 丢弃当前的 SSL 对象
-
-                    let mut ssl_builder = SslConnector::builder(SslMethod::tls())
-                        .map_err(|e| RatError::NetworkError(format!("重新创建 SSL Builder 失败: {}", e)))?;
-
-                    ssl_builder.set_verify(SslVerifyMode::NONE);
-                    ssl_builder.set_alpn_protos(b"\x02h2")?;
-
-                    let ssl_connector_new = ssl_builder.build();
-                    ssl = openssl::ssl::Ssl::new(&ssl_connector_new.context())
-                        .map_err(|e| RatError::NetworkError(format!("重新创建 SSL 失败: {}", e)))?;
-
-                    println!("[客户端调试] 重新创建的 SSL 对象 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-                }
-            }
 
             // 设置 SNI (Server Name Indication)
             ssl.set_hostname(host)
