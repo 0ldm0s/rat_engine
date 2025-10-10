@@ -280,7 +280,7 @@ async fn run_debug_client_test() -> Result<(), Box<dyn std::error::Error + Send 
         .connect_timeout(Duration::from_secs(10))?
         .request_timeout(Duration::from_secs(30))?
         .max_idle_connections(10)?
-        .http2_only()
+        .http_mixed()
         .user_agent("RAT-Engine-gRPC-Client/1.0")?
         .disable_compression()
         .development_mode()
