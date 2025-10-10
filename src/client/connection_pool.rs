@@ -339,13 +339,13 @@ impl ClientConnectionPool {
 
                 // 配置客户端证书
                 for cert_data in &mtls_config.client_cert_chain {
-                    let cert = openssl::x509::X509::from_der(cert_data)
+                    let cert = openssl::x509::X509::from_pem(cert_data)
                         .map_err(|e| RatError::TlsError(format!("解析客户端证书失败: {}", e)))?;
                     ssl_builder.set_certificate(&cert)
                         .map_err(|e| RatError::TlsError(format!("设置客户端证书失败: {}", e)))?;
                 }
 
-                let key = openssl::pkey::PKey::private_key_from_der(&mtls_config.client_private_key)
+                let key = openssl::pkey::PKey::private_key_from_pem(&mtls_config.client_private_key)
                     .map_err(|e| RatError::TlsError(format!("解析客户端私钥失败: {}", e)))?;
                 ssl_builder.set_private_key(&key)
                     .map_err(|e| RatError::TlsError(format!("设置客户端私钥失败: {}", e)))?;
