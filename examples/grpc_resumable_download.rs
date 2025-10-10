@@ -389,64 +389,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // 日志通过RatEngineBuilder初始化
 
-    let args: Vec<String> = std::env::args().collect();
-    let command = args.get(1).map(|s| s.as_str()).unwrap_or("auto");
+    println!("🚀 启动断点续传下载完整测试");
 
-    match command {
-        "server" => run_server().await,
-        "download" => {
-            let file_id = args.get(2).map(|s| s.as_str()).unwrap_or("test_file_001");
-            run_client_download(file_id).await
+    // 启动服务器任务
+    let server_handle = tokio::spawn(async {
+        if let Err(e) = run_server().await {
+            eprintln!("❌ 服务器启动失败: {}", e);
         }
-        "resume" => {
-            let file_id = args.get(2).map(|s| s.as_str()).unwrap_or("test_file_001");
-            run_client_resume(file_id).await
+    });
+
+    // 等待服务器启动
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // 执行完整的下载测试
+    let test_result = run_complete_download_test().await;
+
+    // 显示测试结果
+    match test_result {
+        Ok(_) => {
+            println!("✅ 断点续传下载测试完成");
         }
-        "list" => run_client_list().await,
-        "delete" => {
-            let file_id = args.get(2).map(|s| s.as_str()).unwrap_or("test_file_001");
-            run_client_delete(file_id).await
-        }
-        "auto" | _ => {
-            // 自动化完整测试流程
-            println!("🚀 启动断点续传下载完整测试");
-            
-            // 启动服务器任务
-            let server_handle = tokio::spawn(async {
-                if let Err(e) = run_server().await {
-                    eprintln!("❌ 服务器启动失败: {}", e);
-                }
-            });
-            
-            // 等待服务器启动
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            
-            // 执行完整的下载测试
-            let test_result = run_complete_download_test().await;
-            
-            // 显示测试结果
-            match test_result {
-                Ok(_) => {
-                    println!("✅ 断点续传下载测试完成");
-                }
-                Err(e) => {
-                    eprintln!("❌ 断点续传下载测试失败: {}", e);
-                }
-            }
-            
-            // 测试完成，关闭服务器
-            println!("🛑 测试完成，正在关闭服务器...");
-            server_handle.abort();
-            
-            // 等待一下确保服务器关闭
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            println!("✅ 服务器已关闭，测试结束");
-            
-            Ok(())
+        Err(e) => {
+            eprintln!("❌ 断点续传下载测试失败: {}", e);
         }
     }
-}
 
+    // 测试完成，关闭服务器
+    println!("🛑 测试完成，正在关闭服务器...");
+    server_handle.abort();
+
+    // 等待一下确保服务器关闭
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("✅ 服务器已关闭，测试结束");
+
+    Ok(())
+}
 /// 运行完整的下载测试流程
 async fn run_complete_download_test() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let file_id = "test_file_001";
@@ -525,6 +502,10 @@ async fn run_complete_download_test() -> Result<(), Box<dyn std::error::Error + 
 }
 
 async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 初始化日志系统
+    let log_config = rat_engine::utils::logger::LogConfig::default();
+    rat_engine::utils::logger::Logger::init(log_config).expect("Failed to initialize logger");
+
     info!("🚀 启动支持断点续传的文件下载服务器...");
 
     // 创建文件存储目录
@@ -567,10 +548,14 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(|e| format!("启用开发模式失败: {}", e))?
         .build()?;
     
-    engine.start("localhost".to_string(), 8080).await
+    engine.start("127.0.0.1".to_string(), 8080).await
 }
 
 async fn run_client_download(file_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 初始化日志系统
+    let log_config = rat_engine::utils::logger::LogConfig::default();
+    rat_engine::utils::logger::Logger::init(log_config).expect("Failed to initialize logger");
+
     info!("📥 开始下载文件: {}", file_id);
 
     // 创建客户端
@@ -579,7 +564,7 @@ async fn run_client_download(file_id: &str) -> Result<(), Box<dyn std::error::Er
         .connect_timeout(Duration::from_secs(10))?
         .request_timeout(Duration::from_secs(30))?
         .max_idle_connections(10)?
-        .http2_only()
+        .http_mixed()
         .user_agent("ResumableDownloadClient/1.0")?
         .disable_compression()
         .development_mode()
@@ -590,7 +575,7 @@ async fn run_client_download(file_id: &str) -> Result<(), Box<dyn std::error::Er
     metadata_manager.initialize().await?;
 
     // 创建下载客户端
-    let server_uri = "https://localhost:8080".to_string();
+    let server_uri = "https://127.0.0.1:8080".to_string();
     let download_client = ResumableDownloadClient::new(grpc_client, metadata_manager, server_uri);
 
     // 开始下载
@@ -600,6 +585,10 @@ async fn run_client_download(file_id: &str) -> Result<(), Box<dyn std::error::Er
 }
 
 async fn run_client_resume(file_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 初始化日志系统
+    let log_config = rat_engine::utils::logger::LogConfig::default();
+    rat_engine::utils::logger::Logger::init(log_config).expect("Failed to initialize logger");
+
     info!("▶️ 恢复下载文件: {}", file_id);
 
     // 创建客户端
@@ -608,7 +597,7 @@ async fn run_client_resume(file_id: &str) -> Result<(), Box<dyn std::error::Erro
         .connect_timeout(Duration::from_secs(10))?
         .request_timeout(Duration::from_secs(30))?
         .max_idle_connections(10)?
-        .http2_only()
+        .http_mixed()
         .user_agent("ResumableDownloadClient/1.0")?
         .disable_compression()
         .development_mode()
@@ -619,7 +608,7 @@ async fn run_client_resume(file_id: &str) -> Result<(), Box<dyn std::error::Erro
     metadata_manager.initialize().await?;
 
     // 创建下载客户端
-    let server_uri = "https://localhost:8080".to_string();
+    let server_uri = "https://127.0.0.1:8080".to_string();
     let download_client = ResumableDownloadClient::new(grpc_client, metadata_manager, server_uri);
 
     // 恢复下载
