@@ -239,9 +239,14 @@ async fn start_tls_test_server() -> Result<(), Box<dyn std::error::Error + Send 
     
     println!("🚀 [TLS服务器] 启动 TLS gRPC 服务器，监听地址: 127.0.0.1:50052");
     
+    // 配置调试级别日志
+    let mut log_config = rat_engine::utils::logger::LogConfig::default();
+    log_config.level = rat_engine::utils::logger::LogLevel::Debug;
+
     // 使用新的 RatEngineBuilder 架构配置开发模式证书
     let engine = RatEngine::builder()
         .router(router)
+        .with_log_config(log_config)
         .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()])
         .await
         .map_err(|e| format!("配置开发模式失败: {}", e))?

@@ -6,15 +6,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use crate::client::builder::ClientProtocolMode;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::interval;
 use hyper::Uri;
 use h2::{client::SendRequest, RecvStream};
 use hyper::body::Bytes;
-use rustls::pki_types::ServerName;
-use tokio_rustls::TlsConnector;
+use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use tokio_openssl::SslStream;
 use x509_parser::prelude::FromDer;
 use crate::error::{RatError, RatResult};
 use crate::utils::logger::{info, warn, debug, error};
@@ -101,9 +100,7 @@ pub struct ConnectionPoolConfig {
     pub development_mode: bool,
     /// mTLS 客户端配置
     pub mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
-    /// 协议模式
-    pub protocol_mode: ClientProtocolMode,
-}
+  }
 
 impl Default for ConnectionPoolConfig {
     fn default() -> Self {
@@ -116,8 +113,7 @@ impl Default for ConnectionPoolConfig {
             max_connections_per_target: 10,
             development_mode: false, // 默认不启用开发模式
             mtls_config: None,
-            protocol_mode: ClientProtocolMode::Auto, // 默认自动模式
-        }
+          }
     }
 }
 
@@ -281,8 +277,8 @@ impl ClientConnectionPool {
     /// 创建新连接
     async fn create_new_connection(&self, target_uri: Uri) -> RatResult<Arc<ClientConnection>> {
         use tokio::net::TcpStream;
-        use rustls::pki_types::ServerName;
-        use tokio_rustls::TlsConnector;
+        use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+        use tokio_openssl::SslStream;
 
         let connection_id = self.connection_id_counter.fetch_add(1, Ordering::Relaxed).to_string();
         let target_key = format!("{}://{}", target_uri.scheme_str().unwrap_or("http"), target_uri.authority().unwrap());
@@ -313,317 +309,162 @@ impl ClientConnectionPool {
             debug!("[客户端] 🔐 建立 TLS 连接到 {}:{} (开发模式: {})", host, port, self.config.development_mode);
             
             // 根据开发模式和 mTLS 配置创建 TLS 配置
-            let tls_config = if let Some(mtls_config) = &self.config.mtls_config {
+            let ssl_connector = if let Some(mtls_config) = &self.config.mtls_config {
                 // mTLS 模式：启用客户端证书认证
                 info!("🔐 连接池启用 mTLS 客户端证书认证");
-                
-                // 构建根证书存储
-                let mut root_store = rustls::RootCertStore::empty();
-                
-                if let Some(ca_certs) = &mtls_config.ca_certs {
-                    // 使用自定义 CA 证书
-                    for ca_cert in ca_certs {
-                        root_store.add(ca_cert.clone())
-                            .map_err(|e| RatError::NetworkError(format!("添加 CA 证书失败: {}", e)))?;
-                    }
-                    info!("✅ 连接池已加载 {} 个自定义 CA 证书", ca_certs.len());
-                } else {
-                    // 使用系统默认根证书
-                    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-                    info!("✅ 连接池已加载系统默认根证书");
-                }
-                
-                // 创建客户端证书链
-                let client_cert_chain = mtls_config.client_cert_chain.clone();
-                let client_private_key = mtls_config.client_private_key.clone_key();
-                
-                let mut tls_config = if mtls_config.skip_server_verification || self.config.development_mode {
-                    // 开发模式或跳过服务器验证：使用危险的证书验证器
+
+                let mut ssl_builder = SslConnector::builder(SslMethod::tls())
+                    .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                // 配置证书验证模式
+                if mtls_config.skip_server_verification || self.config.development_mode {
+                    // 开发模式：跳过证书验证
                     warn!("⚠️  警告：连接池启用开发模式或跳过服务器验证，将跳过服务器证书验证！仅用于开发环境！");
-                    
-                    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-                    use rustls::{pki_types, Error as RustlsError};
-                    
-                    #[derive(Debug)]
-                    struct DangerousClientCertVerifier {
-                        mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
-                    }
-                    
-                    impl ServerCertVerifier for DangerousClientCertVerifier {
-                        fn verify_server_cert(
-                            &self,
-                            end_entity: &pki_types::CertificateDer<'_>,
-                            intermediates: &[pki_types::CertificateDer<'_>],
-                            server_name: &pki_types::ServerName<'_>,
-                            ocsp_response: &[u8],
-                            now: pki_types::UnixTime,
-                        ) -> Result<ServerCertVerified, RustlsError> {
-                            debug!("🔍 [客户端-开发模式] 服务器证书验证开始");
-                            debug!("   服务器名称: {:?}", server_name);
-                            debug!("   证书验证模式: 开发模式（跳过验证）");
-                            debug!("   中间证书数量: {}", intermediates.len());
-                            debug!("   OCSP 响应: {}", if ocsp_response.is_empty() { "无" } else { "有" });
-                            debug!("   验证时间: {:?}", now);
-                            
-                            // 显示配置的证书路径信息
-                            if let Some(config) = &self.mtls_config {
-                                debug!("   mTLS 配置信息:");
-                                debug!("     - 客户端证书数量: {}", config.client_cert_chain.len());
-                                if let Some(client_cert_path) = &config.client_cert_path {
-                                    debug!("     - 客户端证书路径: {}", client_cert_path);
-                                }
-                                if let Some(client_key_path) = &config.client_key_path {
-                                    debug!("     - 客户端私钥路径: {}", client_key_path);
-                                }
-                                if let Some(ca_certs) = &config.ca_certs {
-                                    debug!("     - CA 证书数量: {}", ca_certs.len());
-                                }
-                                if let Some(ca_cert_path) = &config.ca_cert_path {
-                                    debug!("     - CA 证书路径: {}", ca_cert_path);
-                                }
-                                if let Some(server_name) = &config.server_name {
-                                    debug!("     - 配置的服务器名称: {}", server_name);
-                                }
-                                debug!("     - 跳过服务器验证: {}", config.skip_server_verification);
-                            }
-                            
-                            // 尝试解析证书信息以获取更多调试信息
-                            if let Ok((_, cert)) = x509_parser::certificate::X509Certificate::from_der(end_entity) {
-                                debug!("   证书主题: {}", cert.subject());
-                                debug!("   证书颁发者: {}", cert.issuer());
-                                debug!("   证书有效期: {} - {}", 
-                                    cert.validity().not_before.to_datetime(),
-                                    cert.validity().not_after.to_datetime());
-                            }
-                            
-                            debug!("✅ [客户端-开发模式] 服务器证书验证跳过（开发模式）");
-                            Ok(ServerCertVerified::assertion())
-                        }
-                        
-                        fn verify_tls12_signature(
-                            &self,
-                            message: &[u8],
-                            cert: &pki_types::CertificateDer<'_>,
-                            dss: &rustls::DigitallySignedStruct,
-                        ) -> Result<HandshakeSignatureValid, RustlsError> {
-                            debug!("🔍 [客户端-开发模式] TLS 1.2 签名验证开始");
-                            debug!("   签名验证模式: 开发模式（跳过验证）");
-                            debug!("   签名算法: {:?}", dss.scheme);
-                            debug!("   消息哈希: 已计算");
-                            
-                            // 尝试解析证书信息
-                            if let Ok((_, cert_info)) = x509_parser::certificate::X509Certificate::from_der(cert) {
-                                debug!("   证书主题: {}", cert_info.subject());
-                                debug!("   公钥算法: {}", cert_info.public_key().algorithm.algorithm);
-                            }
-                            
-                            debug!("✅ [客户端-开发模式] TLS 1.2 签名验证跳过（开发模式）");
-                            Ok(HandshakeSignatureValid::assertion())
-                        }
-                        
-                        fn verify_tls13_signature(
-                            &self,
-                            message: &[u8],
-                            cert: &pki_types::CertificateDer<'_>,
-                            dss: &rustls::DigitallySignedStruct,
-                        ) -> Result<HandshakeSignatureValid, RustlsError> {
-                            debug!("🔍 [客户端-开发模式] TLS 1.3 签名验证开始");
-                            debug!("   签名验证模式: 开发模式（跳过验证）");
-                            debug!("   签名算法: {:?}", dss.scheme);
-                            debug!("   消息哈希: 已计算");
-                            
-                            // 尝试解析证书信息
-                            if let Ok((_, cert_info)) = x509_parser::certificate::X509Certificate::from_der(cert) {
-                                debug!("   证书主题: {}", cert_info.subject());
-                                debug!("   公钥算法: {}", cert_info.public_key().algorithm.algorithm);
-                            }
-                            
-                            debug!("✅ [客户端-开发模式] TLS 1.3 签名验证跳过（开发模式）");
-                            Ok(HandshakeSignatureValid::assertion())
-                        }
-                        
-                        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                            vec![
-                                rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                                rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                                rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                                rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                                rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                                rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                                rustls::SignatureScheme::RSA_PSS_SHA256,
-                                rustls::SignatureScheme::RSA_PSS_SHA384,
-                                rustls::SignatureScheme::RSA_PSS_SHA512,
-                                rustls::SignatureScheme::ED25519,
-                                rustls::SignatureScheme::ED448,
-                            ]
-                        }
-                    }
-                    
-                    rustls::ClientConfig::builder()
-                        .dangerous()
-                        .with_custom_certificate_verifier(std::sync::Arc::new(DangerousClientCertVerifier {
-                            mtls_config: Some(mtls_config.clone()),
-                        }))
-                        .with_client_auth_cert(
-                            client_cert_chain,
-                            client_private_key,
-                        ).map_err(|e| RatError::TlsError(format!("配置客户端证书失败: {}", e)))?
+                    ssl_builder.set_verify(SslVerifyMode::NONE);
                 } else {
-                    // 非开发模式：严格证书验证
-                    rustls::ClientConfig::builder()
-                        .with_root_certificates(root_store)
-                        .with_client_auth_cert(
-                            client_cert_chain,
-                            client_private_key,
-                        ).map_err(|e| RatError::TlsError(format!("配置客户端证书失败: {}", e)))?
-                };
-                
+                    // 严格证书验证
+                    ssl_builder.set_verify(SslVerifyMode::PEER);
+
+                    // 添加自定义 CA 证书（如果有）
+                    if let Some(ca_certs) = &mtls_config.ca_certs {
+                        for ca_cert in ca_certs {
+                            let cert = openssl::x509::X509::from_der(ca_cert)
+                                .map_err(|e| RatError::TlsError(format!("解析 CA 证书失败: {}", e)))?;
+                            ssl_builder.cert_store_mut()
+                                .add_cert(cert)
+                                .map_err(|e| RatError::TlsError(format!("添加 CA 证书失败: {}", e)))?;
+                        }
+                        info!("✅ 连接池已加载 {} 个自定义 CA 证书", ca_certs.len());
+                    }
+                }
+
+                // 配置客户端证书
+                for cert_data in &mtls_config.client_cert_chain {
+                    let cert = openssl::x509::X509::from_der(cert_data)
+                        .map_err(|e| RatError::TlsError(format!("解析客户端证书失败: {}", e)))?;
+                    ssl_builder.set_certificate(&cert)
+                        .map_err(|e| RatError::TlsError(format!("设置客户端证书失败: {}", e)))?;
+                }
+
+                let key = openssl::pkey::PKey::private_key_from_der(&mtls_config.client_private_key)
+                    .map_err(|e| RatError::TlsError(format!("解析客户端私钥失败: {}", e)))?;
+                ssl_builder.set_private_key(&key)
+                    .map_err(|e| RatError::TlsError(format!("设置客户端私钥失败: {}", e)))?;
+
                 // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-                tls_config.alpn_protocols = vec![b"h2".to_vec()];
-                rat_logger::debug!("🔍 [客户端-mTLS] 配置的 ALPN 协议: {:?}", tls_config.alpn_protocols);
-                
-                tls_config
+                ssl_builder.set_alpn_protos(b"\x02h2")?;
+
+    
+                ssl_builder.build()
             } else if self.config.development_mode {
                 // 开发模式：跳过证书验证，无客户端证书
                 warn!("⚠️  警告：连接池已启用开发模式，将跳过所有 TLS 证书验证！仅用于开发环境！");
-                
-                use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-                use rustls::{pki_types, Error as RustlsError};
-                
-                #[derive(Debug)]
-                struct DangerousClientCertVerifier {
-                    development_mode: bool,
-                }
-                
-                impl ServerCertVerifier for DangerousClientCertVerifier {
-                    fn verify_server_cert(
-                        &self,
-                        end_entity: &pki_types::CertificateDer<'_>,
-                        intermediates: &[pki_types::CertificateDer<'_>],
-                        server_name: &pki_types::ServerName<'_>,
-                        ocsp_response: &[u8],
-                        now: pki_types::UnixTime,
-                    ) -> Result<ServerCertVerified, RustlsError> {
-                        debug!("🔍 [客户端-开发模式-无mTLS] 服务器证书验证开始");
-                        debug!("   服务器名称: {:?}", server_name);
-                        debug!("   证书验证模式: 开发模式（跳过验证）");
-                        debug!("   中间证书数量: {}", intermediates.len());
-                        debug!("   OCSP 响应: {}", if ocsp_response.is_empty() { "无" } else { "有" });
-                        debug!("   验证时间: {:?}", now);
-                        debug!("   开发模式状态: {}", self.development_mode);
-                        
-                        // 尝试解析证书信息以获取更多调试信息
-                        if let Ok((_, cert)) = x509_parser::certificate::X509Certificate::from_der(end_entity) {
-                            debug!("   证书主题: {}", cert.subject());
-                            debug!("   证书颁发者: {}", cert.issuer());
-                            debug!("   证书有效期: {} - {}", 
-                                cert.validity().not_before.to_datetime(),
-                                cert.validity().not_after.to_datetime());
-                        }
-                        
-                        debug!("✅ [客户端-开发模式-无mTLS] 服务器证书验证跳过（开发模式）");
-                        Ok(ServerCertVerified::assertion())
-                    }
-                    
-                    fn verify_tls12_signature(
-                        &self,
-                        message: &[u8],
-                        cert: &pki_types::CertificateDer<'_>,
-                        dss: &rustls::DigitallySignedStruct,
-                    ) -> Result<HandshakeSignatureValid, RustlsError> {
-                        debug!("🔍 [客户端-开发模式-无mTLS] TLS 1.2 签名验证开始");
-                        debug!("   签名验证模式: 开发模式（跳过验证）");
-                        debug!("   签名算法: {:?}", dss.scheme);
-                        debug!("   消息哈希: 已计算");
-                        
-                        // 尝试解析证书信息
-                        if let Ok((_, cert_info)) = x509_parser::certificate::X509Certificate::from_der(cert) {
-                            debug!("   证书主题: {}", cert_info.subject());
-                            debug!("   公钥算法: {}", cert_info.public_key().algorithm.algorithm);
-                        }
-                        
-                        debug!("✅ [客户端-开发模式-无mTLS] TLS 1.2 签名验证跳过（开发模式）");
-                        Ok(HandshakeSignatureValid::assertion())
-                    }
-                    
-                    fn verify_tls13_signature(
-                        &self,
-                        message: &[u8],
-                        cert: &pki_types::CertificateDer<'_>,
-                        dss: &rustls::DigitallySignedStruct,
-                    ) -> Result<HandshakeSignatureValid, RustlsError> {
-                        debug!("🔍 [客户端-开发模式-无mTLS] TLS 1.3 签名验证开始");
-                        debug!("   签名验证模式: 开发模式（跳过验证）");
-                        debug!("   签名算法: {:?}", dss.scheme);
-                        debug!("   消息哈希: 已计算");
-                        
-                        // 尝试解析证书信息
-                        if let Ok((_, cert_info)) = x509_parser::certificate::X509Certificate::from_der(cert) {
-                            debug!("   证书主题: {}", cert_info.subject());
-                            debug!("   公钥算法: {}", cert_info.public_key().algorithm.algorithm);
-                        }
-                        
-                        debug!("✅ [客户端-开发模式-无mTLS] TLS 1.3 签名验证跳过（开发模式）");
-                        Ok(HandshakeSignatureValid::assertion())
-                    }
-                    
-                    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                        vec![
-                            rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                            rustls::SignatureScheme::RSA_PSS_SHA256,
-                            rustls::SignatureScheme::RSA_PSS_SHA384,
-                            rustls::SignatureScheme::RSA_PSS_SHA512,
-                            rustls::SignatureScheme::ED25519,
-                            rustls::SignatureScheme::ED448,
-                        ]
-                    }
-                }
-                
-                let mut tls_config = rustls::ClientConfig::builder()
-                    .dangerous()
-                    .with_custom_certificate_verifier(std::sync::Arc::new(DangerousClientCertVerifier {
-                        development_mode: self.config.development_mode,
-                    }))
-                    .with_no_client_auth();
-                
-                // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-                tls_config.alpn_protocols = vec![b"h2".to_vec()];
-                
-                tls_config
+
+                let mut ssl_builder = SslConnector::builder(SslMethod::tls())
+                    .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+
+                ssl_builder.set_verify(SslVerifyMode::NONE);
+                ssl_builder.set_alpn_protos(b"\x02h2")?;
+
+                // 开发模式下保持标准协议版本，仅跳过证书验证
+
+                ssl_builder.build()
             } else {
                 // 非开发模式：严格证书验证，无客户端证书
-                let mut root_store = rustls::RootCertStore::empty();
-                root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-                
-                let mut tls_config = rustls::ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth();
-                
-                // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-                tls_config.alpn_protocols = vec![b"h2".to_vec()];
-                
-                tls_config
+                let mut ssl_builder = SslConnector::builder(SslMethod::tls())
+                    .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+
+                ssl_builder.set_verify(SslVerifyMode::PEER);
+                ssl_builder.set_alpn_protos(b"\x02h2")?;
+
+                ssl_builder.build()
             };
-            
-            let tls_connector = TlsConnector::from(std::sync::Arc::new(tls_config));
-            
-            // 解析服务器名称
-            let server_name = ServerName::try_from(host.to_string())
-                .map_err(|e| RatError::RequestError(format!("无效的服务器名称 '{}': {}", host, e)))?;
-            
+
             // 建立 TLS 连接
-            let tls_stream = tls_connector.connect(server_name, tcp_stream).await
-                .map_err(|e| RatError::NetworkError(format!("TLS 连接失败: {}", e)))?;
-            
+            let mut ssl = openssl::ssl::Ssl::new(&ssl_connector.context())
+                .map_err(|e| RatError::NetworkError(format!("创建 SSL 失败: {}", e)))?;
+
+            println!("[客户端调试] SSL 对象创建成功");
+            println!("[客户端调试] SSL 版本: {:?}", ssl.version_str());
+
+            // 调试：无法直接获取 SSL 上下文的 ALPN 配置，但可以通过其他方式验证
+            println!("[客户端调试] SSL 上下文创建完成，ALPN 配置已在 Builder 中设置");
+
+            // 调试：检查当前 SSL 对象的 ALPN 协议（握手前）
+            println!("[客户端调试] 握手前 SSL 对象的 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+
+            // 尝试直接在 SSL 对象上设置 ALPN 协议
+            // 首先尝试使用 set_alpn_protos 方法
+            match ssl.set_alpn_protos(b"\x02h2") {
+                Ok(_) => {
+                    println!("[客户端调试] SSL 对象 ALPN 协议已显式设置");
+                    println!("[客户端调试] 设置后 SSL 对象的 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+                }
+                Err(e) => {
+                    println!("[客户端调试] SSL 对象 set_alpn_protos 失败: {}, 尝试其他方法", e);
+
+                    // 如果直接设置失败，尝试使用 SslConnector 重新创建
+                    println!("[客户端调试] 尝试重新创建带有 ALPN 的 SSL 对象");
+
+                    // 在 SslConnector Builder 中再次确认 ALPN 设置
+                    drop(ssl); // 丢弃当前的 SSL 对象
+
+                    let mut ssl_builder = SslConnector::builder(SslMethod::tls())
+                        .map_err(|e| RatError::NetworkError(format!("重新创建 SSL Builder 失败: {}", e)))?;
+
+                    ssl_builder.set_verify(SslVerifyMode::NONE);
+                    ssl_builder.set_alpn_protos(b"\x02h2")?;
+
+                    let ssl_connector_new = ssl_builder.build();
+                    ssl = openssl::ssl::Ssl::new(&ssl_connector_new.context())
+                        .map_err(|e| RatError::NetworkError(format!("重新创建 SSL 失败: {}", e)))?;
+
+                    println!("[客户端调试] 重新创建的 SSL 对象 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+                }
+            }
+
+            // 设置 SNI (Server Name Indication)
+            ssl.set_hostname(host)
+                .map_err(|e| RatError::NetworkError(format!("设置 SNI 主机名失败: {}", e)))?;
+            println!("[客户端调试] SNI 主机名设置: {}", host);
+
+            // 设置连接类型为客户端
+            ssl.set_connect_state();
+            println!("[客户端调试] SSL 连接类型设置为客户端");
+
+            let mut tls_stream = SslStream::new(ssl, tcp_stream)
+                .map_err(|e| RatError::NetworkError(format!("创建 TLS 流失败: {}", e)))?;
+            println!("[客户端调试] TLS 流创建成功");
+
+            // 使用异步方式完成 TLS 握手
+            debug!("[客户端] 🔐 开始 TLS 握手...");
+            println!("[客户端调试] 开始 TLS 握手过程...");
+            use futures_util::future::poll_fn;
+            poll_fn(|cx| {
+                match std::pin::Pin::new(&mut tls_stream).poll_do_handshake(cx) {
+                    std::task::Poll::Ready(Ok(())) => {
+                        debug!("[客户端] ✅ TLS 握手成功");
+                        println!("[客户端调试] ✅ TLS 握手成功！");
+
+                        // 打印握手后的详细信息
+                        let ssl = tls_stream.ssl();
+                        println!("[客户端调试] 握手后 SSL 版本: {:?}", ssl.version_str());
+                        println!("[客户端调试] 握手后 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+                        println!("[客户端调试] 握手后 服务器证书: {:?}", ssl.peer_certificate());
+
+                        std::task::Poll::Ready(Ok(()))
+                    },
+                    std::task::Poll::Ready(Err(e)) => {
+                        error!("[客户端] ❌ TLS 握手失败: {}", e);
+                        println!("[客户端调试] ❌ TLS 握手失败: {}", e);
+                        std::task::Poll::Ready(Err(e))
+                    },
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                }
+            }).await.map_err(|e| RatError::NetworkError(format!("TLS 握手失败: {}", e)))?;
+
+            // 调试 ALPN 协商结果
+            let selected_protocol = tls_stream.ssl().selected_alpn_protocol();
+            debug!("[客户端] 🔐 TLS 连接建立成功，ALPN 协商结果: {:?}", selected_protocol);
             debug!("[客户端] 🔐 TLS 连接建立成功，开始 HTTP/2 握手");
             
             // 配置 HTTP/2 客户端，设置合适的帧大小
@@ -643,35 +484,24 @@ impl ClientConnectionPool {
                 }
             });
         } else {
-            // HTTP: 根据协议模式选择 HTTP/1.1 或 HTTP/2
-            match self.config.protocol_mode {
-                ClientProtocolMode::Http1Only => {
-                    // HTTP/1.1 模式：返回错误，暂不支持 HTTP/1.1 连接池
-                    return Err(RatError::NetworkError(
-                        "HTTP/1.1 连接池模式暂未实现，请使用 HTTP/2 或启用 HTTP/2 支持".to_string()
-                    ));
+            // HTTP: 使用 H2C (HTTP/2 Cleartext)
+            debug!("[客户端] 🌐 建立 HTTP/2 Cleartext 连接到 {}:{}", host, port);
+
+            // 配置 HTTP/2 客户端，设置合适的帧大小
+            let mut h2_builder = h2::client::Builder::default();
+            h2_builder.max_frame_size(1024 * 1024); // 设置最大帧大小为 1MB
+
+            let (send_req, h2_conn) = h2_builder.handshake(tcp_stream).await
+                .map_err(|e| RatError::NetworkError(format!("H2 握手失败: {}", e)))?;
+
+            send_request = send_req;
+
+            // 启动 H2 连接任务
+            connection_handle = tokio::spawn(async move {
+                if let Err(e) = h2_conn.await {
+                    error!("[客户端] H2 连接错误: {}", e);
                 }
-                _ => {
-                    // HTTP/2 模式：进行 H2 握手
-                    debug!("[客户端] 🌐 建立 HTTP/2 Cleartext 连接到 {}:{}", host, port);
-                    
-                    // 配置 HTTP/2 客户端，设置合适的帧大小
-                    let mut h2_builder = h2::client::Builder::default();
-                    h2_builder.max_frame_size(1024 * 1024); // 设置最大帧大小为 1MB
-                    
-                    let (send_req, h2_conn) = h2_builder.handshake(tcp_stream).await
-                        .map_err(|e| RatError::NetworkError(format!("H2 握手失败: {}", e)))?;
-                    
-                    send_request = send_req;
-                    
-                    // 启动 H2 连接任务
-                    connection_handle = tokio::spawn(async move {
-                        if let Err(e) = h2_conn.await {
-                            error!("[客户端] H2 连接错误: {}", e);
-                        }
-                    });
-                }
-            }
+            });
         }
 
         // 创建连接对象

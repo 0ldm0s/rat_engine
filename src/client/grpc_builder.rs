@@ -11,18 +11,19 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use crate::error::{RatError, RatResult};
 use crate::client::grpc_client::{RatGrpcClient, GrpcCompressionMode};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use openssl::pkey::{PKey, Private};
+use openssl::x509::X509;
 use std::sync::Arc;
 
 /// mTLS 客户端配置
 #[derive(Debug)]
 pub struct MtlsClientConfig {
     /// 客户端证书链
-    pub client_cert_chain: Vec<CertificateDer<'static>>,
+    pub client_cert_chain: Vec<Vec<u8>>,
     /// 客户端私钥
-    pub client_private_key: PrivateKeyDer<'static>,
+    pub client_private_key: Vec<u8>,
     /// 自定义 CA 证书（可选，用于验证服务器证书）
-    pub ca_certs: Option<Vec<CertificateDer<'static>>>,
+    pub ca_certs: Option<Vec<Vec<u8>>>,
     /// 是否跳过服务器证书验证（仅开发模式）
     pub skip_server_verification: bool,
     /// 服务器名称（用于 SNI）
@@ -39,7 +40,7 @@ impl Clone for MtlsClientConfig {
     fn clone(&self) -> Self {
         Self {
             client_cert_chain: self.client_cert_chain.clone(),
-            client_private_key: self.client_private_key.clone_key(),
+            client_private_key: self.client_private_key.clone(),
             ca_certs: self.ca_certs.clone(),
             skip_server_verification: self.skip_server_verification,
             server_name: self.server_name.clone(),
@@ -221,9 +222,9 @@ impl RatGrpcClientBuilder {
 
     
     /// 配置 mTLS 客户端认证
-    /// 
+    ///
     /// 启用双向 TLS 认证，客户端将提供证书给服务器验证
-    /// 
+    ///
     /// # 参数
     /// - `client_cert_chain`: 客户端证书链
     /// - `client_private_key`: 客户端私钥
@@ -233,14 +234,14 @@ impl RatGrpcClientBuilder {
     /// - `client_cert_path`: 客户端证书文件路径（用于调试日志）
     /// - `client_key_path`: 客户端私钥文件路径（用于调试日志）
     /// - `ca_cert_path`: CA 证书文件路径（用于调试日志）
-    /// 
+    ///
     /// # 返回值
     /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
     pub fn with_mtls(
         mut self,
-        client_cert_chain: Vec<CertificateDer<'static>>,
-        client_private_key: PrivateKeyDer<'static>,
-        ca_certs: Option<Vec<CertificateDer<'static>>>,
+        client_cert_chain: Vec<Vec<u8>>,
+        client_private_key: Vec<u8>,
+        ca_certs: Option<Vec<Vec<u8>>>,
         skip_server_verification: bool,
         server_name: Option<String>,
         client_cert_path: Option<String>,
@@ -266,22 +267,22 @@ impl RatGrpcClientBuilder {
     }
 
     /// 使用自签名证书配置 mTLS（开发模式）
-    /// 
+    ///
     /// 便捷方法，自动跳过服务器证书验证，适用于开发环境
-    /// 
+    ///
     /// # 参数
     /// - `client_cert_chain`: 客户端证书链
     /// - `client_private_key`: 客户端私钥
     /// - `server_name`: 可选的服务器名称
     /// - `client_cert_path`: 客户端证书文件路径（用于调试日志）
     /// - `client_key_path`: 客户端私钥文件路径（用于调试日志）
-    /// 
+    ///
     /// # 返回值
     /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
     pub fn with_self_signed_mtls(
         mut self,
-        client_cert_chain: Vec<CertificateDer<'static>>,
-        client_private_key: PrivateKeyDer<'static>,
+        client_cert_chain: Vec<Vec<u8>>,
+        client_private_key: Vec<u8>,
         server_name: Option<String>,
         client_cert_path: Option<String>,
         client_key_path: Option<String>,
