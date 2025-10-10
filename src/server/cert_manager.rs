@@ -1016,12 +1016,18 @@ impl CertificateManager {
             debug!("🔍 [ALPN数据] 生成的 ALPN 数据: {:?}", alpn_data);
             debug!("🔍 [ALPN数据] 期望的客户端格式: {:?}", b"\x02h2");
 
-            if let Err(e) = server_config.set_alpn_protos(&alpn_data) {
-                error!("❌ ALPN 协议设置失败: {}", e);
-                return Err(format!("ALPN 协议设置失败: {}", e).into());
-            }
-            info!("✅ ALPN 协议已应用到服务器配置: {:?}",
-                protocols.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>());
+            // 跳过 ALPN 协议设置，gRPC 只使用 HTTP/2，不需要 ALPN 协商
+        } else {
+            println!("[ALPN调试] 服务器端：设置空的 ALPN 协议列表（gRPC 模式）");
+        }
+
+        // 调试：打印 SSL 配置信息
+        println!("[SSL调试] 服务器 SSL 配置:");
+        println!("[SSL调试]   协议数量: {}", protocols.len());
+        if !protocols.is_empty() {
+            println!("[SSL调试]   协议列表: {:?}", protocols.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>());
+        } else {
+            println!("[SSL调试]   协议列表: 空（gRPC 模式）");
         }
 
         // 如果启用了 mTLS，应用客户端认证配置
