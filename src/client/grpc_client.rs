@@ -674,6 +674,7 @@ impl RatGrpcClient {
 
     /// 创建 TLS 配置（支持开发模式）
     fn create_tls_config(&self) -> RatResult<SslConnector> {
+        println!("[客户端ALPN调试] 创建 TLS 配置，development_mode={}", self.development_mode);
         // 检查是否有 mTLS 配置
         if let Some(mtls_config) = &self.mtls_config {
             info!("🔐 启用 mTLS 客户端证书认证");
@@ -682,9 +683,7 @@ impl RatGrpcClient {
             let mut ssl_connector = SslConnector::builder(SslMethod::tls())
                 .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
 
-            // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-            ssl_connector.set_alpn_protos(b"\x02h2")?;
-
+  
             // 配置 CA 证书
             if let Some(ca_certs) = &mtls_config.ca_certs {
                 // 使用自定义 CA 证书
@@ -728,6 +727,10 @@ impl RatGrpcClient {
                 return Err(RatError::TlsError("未找到客户端证书".to_string()));
             }
 
+            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+            ssl_connector.set_alpn_protos(b"\x02h2")?;
+            println!("[客户端ALPN调试] mTLS 模式设置 ALPN 协议: h2");
+
             if mtls_config.skip_server_verification {
                 // 跳过服务器证书验证（仅用于测试）
                 warn!("⚠️  警告：已启用跳过服务器证书验证模式！仅用于测试环境！");
@@ -746,15 +749,14 @@ impl RatGrpcClient {
             let mut ssl_connector = SslConnector::builder(SslMethod::tls())
                 .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
 
-            // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
+            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
             ssl_connector.set_alpn_protos(b"\x02h2")?;
+            println!("[客户端ALPN调试] 开发模式设置 ALPN 协议: h2");
 
             // 跳过证书验证
             ssl_connector.set_verify(SslVerifyMode::NONE);
 
-            // 开发模式下允许更宽松的选项
-            ssl_connector.set_options(openssl::ssl::SslOptions::NO_TLSV1_3
-                | openssl::ssl::SslOptions::NO_TLSV1_2);
+            // 开发模式下保持标准协议版本，仅跳过证书验证
 
             info!("✅ 开发模式 SSL 连接器配置完成");
             Ok(ssl_connector.build())
@@ -763,12 +765,14 @@ impl RatGrpcClient {
             let mut ssl_connector = SslConnector::builder(SslMethod::tls())
                 .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
 
-            // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-            ssl_connector.set_alpn_protos(b"\x02h2")?;
-
+  
             // 设置系统默认证书路径
             ssl_connector.set_default_verify_paths()
                 .map_err(|e| RatError::TlsError(format!("设置默认证书路径失败: {}", e)))?;
+
+            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+            ssl_connector.set_alpn_protos(b"\x02h2")?;
+            println!("[客户端ALPN调试] 标准模式设置 ALPN 协议: h2");
 
             // 严格证书验证
             ssl_connector.set_verify(SslVerifyMode::PEER);
@@ -829,8 +833,19 @@ impl RatGrpcClient {
         use futures_util::future::poll_fn;
         poll_fn(|cx| {
             match std::pin::Pin::new(&mut ssl_stream).poll_do_handshake(cx) {
-                std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-                std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Ready(Ok(())) => {
+                    println!("[客户端调试] ✅ TLS 握手成功！");
+                    println!("[客户端调试] TLS 连接信息:");
+                    let ssl = ssl_stream.ssl();
+                    println!("[客户端调试]   版本: {:?}", ssl.version_str());
+                    println!("[客户端调试]   ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+                    println!("[客户端调试]   服务器证书: {:?}", ssl.peer_certificate());
+                    std::task::Poll::Ready(Ok(()))
+                },
+                std::task::Poll::Ready(Err(e)) => {
+                    println!("[客户端调试] ❌ TLS 握手失败: {}", e);
+                    std::task::Poll::Ready(Err(e))
+                },
                 std::task::Poll::Pending => std::task::Poll::Pending,
             }
         }).await.map_err(|e| RatError::NetworkError(format!("TLS 握手失败: {}", e)))?;
