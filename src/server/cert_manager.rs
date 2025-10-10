@@ -983,12 +983,62 @@ impl CertificateManager {
     /// 配置 ALPN 协议支持
     /// 这个方法应该在服务器启动时调用，而不是在证书初始化时硬编码
     pub fn configure_alpn_protocols(&mut self, protocols: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // OpenSSL 的 ALPN 配置在创建 SslAcceptor 时设置
-        // 由于 Arc<SslAcceptor> 是不可变的，这里只记录配置，实际设置在服务器启动时处理
         info!("✅ ALPN 协议配置已记录: {:?}",
             protocols.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>());
         rat_logger::debug!("🔍 [ALPN配置] ALPN 协议配置已保存: {:?}", protocols);
-        // 注意：实际的 ALPN 配置需要在服务器启动时应用到新创建的 SslAcceptor
+
+        // 立即重新创建服务器配置以应用 ALPN
+        self.recreate_server_config_with_alpn(protocols)?;
+        Ok(())
+    }
+
+    /// 重新创建服务器配置以应用 ALPN 协议
+    fn recreate_server_config_with_alpn(&mut self, protocols: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 检查是否有服务器证书和私钥
+        let certificate = self.server_cert.as_ref()
+            .ok_or("服务器证书未找到，无法应用 ALPN 配置")?;
+        let private_key = self.server_private_key.as_ref()
+            .ok_or("服务器私钥未找到，无法应用 ALPN 配置")?;
+
+        // 创建新的服务器配置，应用 ALPN
+        let mut server_config = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
+        server_config.set_certificate(certificate)?;
+        server_config.set_private_key(private_key)?;
+
+        // 设置 ALPN 协议
+        if !protocols.is_empty() {
+            let mut alpn_data = Vec::new();
+            for p in &protocols {
+                alpn_data.push(p.len() as u8);
+                alpn_data.extend_from_slice(p);
+            }
+
+            debug!("🔍 [ALPN数据] 生成的 ALPN 数据: {:?}", alpn_data);
+            debug!("🔍 [ALPN数据] 期望的客户端格式: {:?}", b"\x02h2");
+
+            if let Err(e) = server_config.set_alpn_protos(&alpn_data) {
+                error!("❌ ALPN 协议设置失败: {}", e);
+                return Err(format!("ALPN 协议设置失败: {}", e).into());
+            }
+            info!("✅ ALPN 协议已应用到服务器配置: {:?}",
+                protocols.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>());
+        }
+
+        // 如果启用了 mTLS，应用客户端认证配置
+        if self.config.mtls_enabled {
+            if self.config.development_mode {
+                // 开发模式：请求但不强制验证客户端证书
+                server_config.set_verify_callback(SslVerifyMode::PEER, |_, _| true);
+            } else {
+                // 生产模式：强制验证客户端证书
+                server_config.set_verify_callback(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT, |_, _| true);
+            }
+        }
+
+        // 更新服务器配置
+        self.server_config = Some(Arc::new(server_config.build()));
+        info!("✅ 服务器配置已重新创建，ALPN 协议已应用");
+
         Ok(())
     }
     

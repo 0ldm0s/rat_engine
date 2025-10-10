@@ -54,7 +54,7 @@ pub use client::{
     // RatHttpClient, RatHttpClientBuilder,  // 已移除HTTP客户端，只保留gRPC客户端
     RatGrpcClient, RatGrpcClientBuilder,
     GrpcRequest, GrpcResponse, GrpcCompressionMode,
-    GrpcStreamResponse, GrpcBidirectionalStream,
+    GrpcStreamResponse,
     // RatHttpResponse, HttpMethod, HttpStatusCode, HttpHeaders, HttpRequestBuilder,  // 已移除HTTP客户端，只保留gRPC客户端
     download_metadata::{DownloadMetadataManager, DownloadMetadata, ChunkInfo, DownloadStatus},
     connection_pool::ClientConnectionPool,

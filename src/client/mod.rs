@@ -45,9 +45,6 @@
 //! # }
 //! ```
 
-pub mod builder;
-pub mod http_client;
-pub mod http_client_delegated;
 pub mod grpc_client;
 pub mod grpc_builder;
 pub mod grpc_client_delegated;
@@ -68,7 +65,7 @@ pub mod independent_http_client;
 #[cfg(any(feature = "client", feature = "grpc-client"))]
 pub use grpc_client::{
     RatGrpcClient, GrpcRequest, GrpcResponse, GrpcCompressionMode,
-    GrpcStreamMessage, GrpcStreamResponse, GrpcBidirectionalStream,
+    GrpcStreamMessage, GrpcStreamResponse,
 };
 #[cfg(any(feature = "client", feature = "grpc-client"))]
 pub use grpc_client_delegated::{
