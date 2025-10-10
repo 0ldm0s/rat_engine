@@ -163,6 +163,22 @@ pub fn check_python_feature() -> Result<(), String> {
     }
 }
 
+/// 检查 Reqwest 特性是否启用
+pub fn check_reqwest_feature() -> Result<(), String> {
+    #[cfg(not(feature = "reqwest"))]
+    {
+        return Err(
+            "此功能需要启用 Reqwest 特性。请在运行时添加 --features reqwest 参数。\n\
+            例如：cargo run --example example_name --features reqwest".to_string()
+        );
+    }
+
+    #[cfg(feature = "reqwest")]
+    {
+        Ok(())
+    }
+}
+
 /// 检查特性组合，缺失时退出程序
 pub fn check_features_and_exit(required_features: &[&str]) {
     let mut missing_features = Vec::new();
@@ -179,6 +195,7 @@ pub fn check_features_and_exit(required_features: &[&str]) {
             "tls" => check_tls_feature(),
             "acme" => check_acme_feature(),
             "python" => check_python_feature(),
+            "reqwest" => check_reqwest_feature(),
             _ => Err(format!("未知特性: {}", feature)),
         };
 
