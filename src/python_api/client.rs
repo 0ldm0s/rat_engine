@@ -484,42 +484,28 @@ impl ClientManager {
         // 配置 mTLS 客户端证书认证
         if let (Some(cert_path), Some(key_path)) = (&config.mtls_client_cert_path, &config.mtls_client_key_path) {
             use std::fs;
-            use rustls_pemfile::{certs, pkcs8_private_keys};
-            use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-            
+            use openssl::x509::X509;
+            use openssl::pkey::{PKey, Private};
+            use openssl::stack::Stack;
+
             // 读取客户端证书和私钥
             let cert_pem = fs::read_to_string(cert_path)
                 .map_err(|e| RatError::ConfigError(format!("无法读取客户端证书文件 {}: {}", cert_path, e)))?;
             let key_pem = fs::read_to_string(key_path)
                 .map_err(|e| RatError::ConfigError(format!("无法读取客户端私钥文件 {}: {}", key_path, e)))?;
-            
+
             // 解析客户端证书
-            let cert_ders: Vec<CertificateDer> = certs(&mut cert_pem.as_bytes())
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| RatError::ConfigError(format!("解析客户端证书失败: {}", e)))?
-                .into_iter()
-                .map(CertificateDer::from)
-                .collect();
-            
-            if cert_ders.is_empty() {
-                return Err(RatError::ConfigError("客户端证书文件中未找到有效证书".to_string()));
-            }
-            
+            let cert = X509::from_pem(cert_pem.as_bytes())
+                .map_err(|e| RatError::ConfigError(format!("解析客户端证书失败: {}", e)))?;
+
             // 解析客户端私钥
-            let mut key_ders = pkcs8_private_keys(&mut key_pem.as_bytes())
-                .collect::<Result<Vec<_>, _>>()
+            let private_key = PKey::private_key_from_pem(key_pem.as_bytes())
                 .map_err(|e| RatError::ConfigError(format!("解析客户端私钥失败: {}", e)))?;
-            
-            if key_ders.is_empty() {
-                return Err(RatError::ConfigError("客户端私钥文件中未找到有效私钥".to_string()));
-            }
-            
-            let private_key = PrivateKeyDer::from(key_ders.remove(0));
-            
+
             // 如果配置了跳过服务器验证，使用自签名 mTLS 配置
             if config.mtls_skip_server_verification {
-                grpc_builder = grpc_builder.with_self_signed_mtls(
-                    cert_ders,
+                grpc_builder = grpc_builder.with_self_signed_mtls_openssl(
+                    cert,
                     private_key,
                     config.mtls_server_name.clone(),
                     config.mtls_client_cert_path.clone(),
@@ -530,21 +516,17 @@ impl ClientManager {
                 let ca_certs = if let Some(ca_path) = &config.mtls_ca_cert_path {
                     let ca_pem = fs::read_to_string(ca_path)
                         .map_err(|e| RatError::ConfigError(format!("无法读取 CA 证书文件 {}: {}", ca_path, e)))?;
-                    
-                    let ca_cert_ders: Vec<CertificateDer> = certs(&mut ca_pem.as_bytes())
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| RatError::ConfigError(format!("解析 CA 证书失败: {}", e)))?
-                        .into_iter()
-                        .map(CertificateDer::from)
-                        .collect();
-                    
-                    Some(ca_cert_ders)
+
+                    let ca_cert = X509::from_pem(ca_pem.as_bytes())
+                        .map_err(|e| RatError::ConfigError(format!("解析 CA 证书失败: {}", e)))?;
+
+                    Some(vec![ca_cert])
                 } else {
                     None
                 };
-                
-                grpc_builder = grpc_builder.with_mtls(
-                    cert_ders,
+
+                grpc_builder = grpc_builder.with_mtls_openssl(
+                    cert,
                     private_key,
                     ca_certs,
                     config.mtls_skip_server_verification,
@@ -587,33 +569,28 @@ impl ClientManager {
             // 配置 mTLS 客户端证书认证（与 gRPC 客户端保持一致）
             if let (Some(cert_path), Some(key_path)) = (&config.mtls_client_cert_path, &config.mtls_client_key_path) {
                 use std::fs;
-                use rustls_pemfile;
-                use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-                
+                use openssl::x509::X509;
+                use openssl::pkey::{PKey, Private};
+                use openssl::stack::Stack;
+
                 // 读取客户端证书和私钥
                 let cert_pem = fs::read_to_string(cert_path)
                     .map_err(|e| RatError::ConfigError(format!("无法读取客户端证书文件 {}: {}", cert_path, e)))?;
                 let key_pem = fs::read_to_string(key_path)
                     .map_err(|e| RatError::ConfigError(format!("无法读取客户端私钥文件 {}: {}", key_path, e)))?;
-                
-                // 解析证书链
-                let cert_chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_bytes())
-                    .collect::<Result<Vec<_>, _>>()
+
+                // 解析客户端证书
+                let cert = X509::from_pem(cert_pem.as_bytes())
                     .map_err(|e| RatError::ConfigError(format!("解析客户端证书失败: {}", e)))?;
-                
-                if cert_chain.is_empty() {
-                    return Err(RatError::ConfigError("客户端证书文件为空".to_string()));
-                }
-                
-                // 解析私钥
-                let private_key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
-                    .map_err(|e| RatError::ConfigError(format!("解析客户端私钥失败: {}", e)))?
-                    .ok_or_else(|| RatError::ConfigError("客户端私钥文件为空".to_string()))?;
-                
+
+                // 解析客户端私钥
+                let private_key = PKey::private_key_from_pem(key_pem.as_bytes())
+                    .map_err(|e| RatError::ConfigError(format!("解析客户端私钥失败: {}", e)))?;
+
                 // 如果配置了跳过服务器验证，使用自签名 mTLS 配置
                 if config.mtls_skip_server_verification {
-                    http_builder = http_builder.with_self_signed_mtls(
-                        cert_chain,
+                    http_builder = http_builder.with_self_signed_mtls_openssl(
+                        cert,
                         private_key,
                         config.mtls_server_name.clone(),
                         config.mtls_client_cert_path.clone(),
@@ -624,18 +601,17 @@ impl ClientManager {
                     let ca_certs = if let Some(ca_path) = &config.mtls_ca_cert_path {
                         let ca_pem = fs::read_to_string(ca_path)
                             .map_err(|e| RatError::ConfigError(format!("无法读取 CA 证书文件 {}: {}", ca_path, e)))?;
-                        
-                        let ca_cert_chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut ca_pem.as_bytes())
-                            .collect::<Result<Vec<_>, _>>()
+
+                        let ca_cert = X509::from_pem(ca_pem.as_bytes())
                             .map_err(|e| RatError::ConfigError(format!("解析 CA 证书失败: {}", e)))?;
-                        
-                        Some(ca_cert_chain)
+
+                        Some(vec![ca_cert])
                     } else {
                         None
                     };
-                    
-                    http_builder = http_builder.with_mtls(
-                        cert_chain,
+
+                    http_builder = http_builder.with_mtls_openssl(
+                        cert,
                         private_key,
                         ca_certs,
                         config.mtls_skip_server_verification,

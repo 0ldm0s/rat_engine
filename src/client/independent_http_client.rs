@@ -85,7 +85,29 @@ impl RatIndependentHttpClient {
     where
         U: reqwest::IntoUrl,
     {
-        self.request(self.client.get(url)).await
+        let start_time = std::time::Instant::now();
+
+        // 直接构建请求
+        let mut request_builder = self.client.get(url);
+
+        // 添加默认请求头
+        for (name, value) in &self.default_headers {
+            request_builder = request_builder.header(name, value);
+        }
+
+        // 设置用户代理
+        request_builder = request_builder.header(USER_AGENT, &self.user_agent);
+
+        // 设置Accept-Encoding头
+        if !self.supported_compressions.is_empty() {
+            let accept_encoding = self.supported_compressions.join(", ");
+            request_builder = request_builder.header(ACCEPT_ENCODING, accept_encoding);
+        }
+
+        debug!("🔍 [独立HTTP客户端] 发送GET请求: {:?}", request_builder);
+
+        // 发送请求并处理响应
+        self.execute_request(request_builder, start_time).await
     }
 
     /// 发送POST请求
@@ -137,29 +159,8 @@ impl RatIndependentHttpClient {
         self.request(self.client.request(Method::OPTIONS, url)).await
     }
 
-    /// 内部请求处理方法
-    async fn request(&self, request: RequestBuilder) -> RatResult<RatIndependentHttpResponse> {
-        let start_time = std::time::Instant::now();
-
-        // 构建最终请求
-        let mut request_builder = request;
-
-        // 添加默认请求头
-        for (name, value) in &self.default_headers {
-            request_builder = request_builder.header(name, value);
-        }
-
-        // 设置用户代理
-        request_builder = request_builder.header(USER_AGENT, &self.user_agent);
-
-        // 设置Accept-Encoding头
-        if !self.supported_compressions.is_empty() {
-            let accept_encoding = self.supported_compressions.join(", ");
-            request_builder = request_builder.header(ACCEPT_ENCODING, accept_encoding);
-        }
-
-        debug!("🔍 [独立HTTP客户端] 发送请求: {:?}", request_builder);
-
+    /// 执行请求并处理响应
+    async fn execute_request(&self, request_builder: RequestBuilder, start_time: std::time::Instant) -> RatResult<RatIndependentHttpResponse> {
         // 发送请求
         let response = request_builder
             .send()
@@ -203,6 +204,32 @@ impl RatIndependentHttpClient {
             compression_algorithm,
             request_time_ms: elapsed.as_millis() as u64,
         })
+    }
+
+    /// 内部请求处理方法（为了兼容性保留）
+    async fn request(&self, request: RequestBuilder) -> RatResult<RatIndependentHttpResponse> {
+        let start_time = std::time::Instant::now();
+
+        // 构建最终请求
+        let mut request_builder = request;
+
+        // 添加默认请求头
+        for (name, value) in &self.default_headers {
+            request_builder = request_builder.header(name, value);
+        }
+
+        // 设置用户代理
+        request_builder = request_builder.header(USER_AGENT, &self.user_agent);
+
+        // 设置Accept-Encoding头
+        if !self.supported_compressions.is_empty() {
+            let accept_encoding = self.supported_compressions.join(", ");
+            request_builder = request_builder.header(ACCEPT_ENCODING, accept_encoding);
+        }
+
+        debug!("🔍 [独立HTTP客户端] 发送请求: {:?}", request_builder);
+
+        self.execute_request(request_builder, start_time).await
     }
 
     /// 连接SSE流
