@@ -27,9 +27,12 @@ mod tests {
             .build()
             .expect("Failed to create client");
 
-        // 发送GET请求
-        let response = client.get("https://httpbin.org/get").await;
+        // 发送GET请求到国内测试API
+        let response = client.get("https://www.baidu.com").await;
 
+        if let Err(e) = &response {
+            println!("请求失败: {:?}", e);
+        }
         assert!(response.is_ok());
 
         let resp = response.unwrap();
@@ -48,9 +51,12 @@ mod tests {
             .build()
             .expect("Failed to create client");
 
-        // 测试压缩请求
-        let response = client.get("https://httpbin.org/gzip").await;
+        // 测试压缩请求到国内网站
+        let response = client.get("https://www.sina.com.cn").await;
 
+        if let Err(e) = &response {
+            println!("压缩请求失败: {:?}", e);
+        }
         assert!(response.is_ok());
 
         let resp = response.unwrap();

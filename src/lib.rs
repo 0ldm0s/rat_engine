@@ -113,7 +113,7 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 fn rat_engine(py: Python, m: &PyModule) -> PyResult<()> {
-    // 确保 rustls CryptoProvider 已安装（Python 模块初始化时）
+    // 确保 OpenSSL 已初始化（Python 模块初始化时）
     utils::crypto_provider::ensure_crypto_provider_installed();
     
     // 注意：日志系统现在由用户手动初始化，不再在模块加载时自动初始化
