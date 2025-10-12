@@ -133,6 +133,8 @@ compression-zstd = ["compression", "zstd"]  # + Zstd
 # 证书和TLS功能
 tls = []  # TLS支持（默认启用）
 acme = ["acme_commander"]  # ACME自动证书
+# 静态编译支持
+static-openssl = ["openssl/vendored"]  # 静态编译OpenSSL（用于release模式）
 
 # 开发功能
 dev = []  # 开发环境（已包含在默认特性中）
