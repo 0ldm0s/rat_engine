@@ -168,6 +168,12 @@ impl From<String> for RatError {
     }
 }
 
+impl From<openssl::error::ErrorStack> for RatError {
+    fn from(err: openssl::error::ErrorStack) -> Self {
+        RatError::TlsError(format!("OpenSSL error: {}", err))
+    }
+}
+
 #[cfg(feature = "cache")]
 impl From<rat_memcache::error::CacheError> for RatError {
     fn from(err: rat_memcache::error::CacheError) -> Self {

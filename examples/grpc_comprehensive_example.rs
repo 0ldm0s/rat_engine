@@ -1282,10 +1282,6 @@ async fn run_real_grpc_client_tests(tests_to_run: Vec<TestType>) -> Result<TestR
             b.request_timeout(Duration::from_secs(30))
         })
         .and_then(|b| {
-            println!("DEBUG: connect_timeout 设置成功");
-            b.request_timeout(Duration::from_secs(30))
-        })
-        .and_then(|b| {
             println!("DEBUG: request_timeout 设置成功");
             b.max_idle_connections(10)
         })
@@ -1916,7 +1912,7 @@ async fn run_real_grpc_client_tests(tests_to_run: Vec<TestType>) -> Result<TestR
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    rat_engine::require_features!("client", "tls");
+    rat_engine::require_features!("client", "tls", "reqwest");
 
     // 日志通过RatEngineBuilder初始化
     

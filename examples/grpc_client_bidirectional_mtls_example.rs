@@ -1,13 +1,13 @@
-//! gRPC 客户端双向流 mTLS 示例
-//! 
+//! gRPC 客户端双向流 mTLS 示例（委托模式）
+//!
 //! 展示如何使用 rat_engine 的 gRPC 客户端进行 H2 + mTLS 双向流通信
-//! 支持客户端证书认证，包含委托模式和传统模式的对比
-//! 
+//! 支持客户端证书认证，使用委托模式实现业务逻辑与传输层分离
+//!
 //! 主要特性:
 //! - mTLS 客户端证书认证
 //! - 自定义 CA 证书验证
 //! - 双向流通信
-//! - 委托模式和传统模式对比
+//! - 委托模式架构
 //! - 完整的错误处理和资源清理
 
 use std::collections::HashMap;
@@ -26,37 +26,30 @@ use rat_engine::server::cert_manager::{CertificateManager, CertManagerConfig};
 use rat_engine::utils::logger::{info, warn, debug, error};
 use rat_engine::{RatEngine, ServerConfig, Router};
 use std::future::Future;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::fs;
 
-/// 加载证书文件
-fn load_certificates(cert_path: &str) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
-    let cert_file = fs::read(cert_path)?;
-    let mut cert_slice = cert_file.as_slice();
-    let cert_iter = certs(&mut cert_slice);
-    let certificates = cert_iter
-        .collect::<Result<Vec<_>, _>>()?;
-    
-    if certificates.is_empty() {
+/// 加载证书文件 - 使用OpenSSL格式
+fn load_certificates(cert_path: &str) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
+    let cert_pem = fs::read_to_string(cert_path)?;
+
+    if cert_pem.is_empty() {
         return Err(format!("证书文件 {} 为空", cert_path).into());
     }
-    
-    Ok(certificates.into_iter().map(CertificateDer::from).collect())
+
+    // 直接返回PEM格式的内容，OpenSSL可以处理
+    Ok(vec![cert_pem.into_bytes()])
 }
 
-/// 加载私钥文件
-fn load_private_key(key_path: &str) -> Result<PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
-    let key_file = fs::read(key_path)?;
-    let mut key_slice = key_file.as_slice();
-    let key_iter = pkcs8_private_keys(&mut key_slice);
-    let mut keys = key_iter.collect::<Result<Vec<_>, _>>()?;
-    
-    if keys.is_empty() {
+/// 加载私钥文件 - 使用OpenSSL格式
+fn load_private_key(key_path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let key_pem = fs::read_to_string(key_path)?;
+
+    if key_pem.is_empty() {
         return Err(format!("私钥文件 {} 为空", key_path).into());
     }
-    
-    Ok(PrivateKeyDer::from(keys.remove(0)))
+
+    // 直接返回PEM格式的内容，OpenSSL可以处理
+    Ok(key_pem.into_bytes())
 }
 
 /// 聊天消息类型
@@ -494,147 +487,6 @@ async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 运行 mTLS 传统模式测试
-async fn run_mtls_traditional_mode() -> Result<(), Box<dyn std::error::Error>> {
-    info!("🚀 启动 mTLS 传统模式双向流测试...");
-    
-    // 加载客户端证书和私钥
-    let client_cert_chain = load_certificates("certs/client.crt")?;
-    let client_private_key = load_private_key("certs/client.key")?;
-    
-    // 创建 mTLS 客户端
-    let client = RatGrpcClientBuilder::new()
-        .connect_timeout(Duration::from_secs(10))?
-        .request_timeout(Duration::from_secs(30))?
-        .max_idle_connections(10)?
-        .http2_only() // 强制使用 HTTP/2
-        .user_agent("rat-engine-mtls-traditional/1.0")?
-        .disable_compression()
-        // 配置 mTLS 客户端证书（开发模式）
-        .with_self_signed_mtls(
-            client_cert_chain,
-            client_private_key,
-            Some("localhost".to_string()),
-            Some("./certs/client.crt".to_string()),
-            Some("./certs/client.key".to_string())
-        )?
-        .development_mode() // 启用开发模式
-        .build()?;
-    
-    // 创建传统模式双向流
-    let mut bidirectional_stream = client.call_bidirectional_stream_with_uri::<ChatMessage, ChatMessage>(
-        "https://127.0.0.1:50053",
-        "chat.ChatService",
-        "BidirectionalChat",
-        None
-    ).await?;
-    
-    info!("✅ mTLS 传统模式双向流创建成功");
-    
-    // 发送连接消息
-    let connect_msg = ChatMessage {
-        user: "mTLS传统客户端".to_string(),
-        message: "Hello from mTLS traditional client!".to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-        message_type: "connect".to_string(),
-    };
-    
-    // 分解双向流为发送端和接收端
-    let (mut sender, mut receiver) = bidirectional_stream.into_parts();
-    
-    sender.send(connect_msg).await?;
-    info!("📤 [mTLS传统模式] 发送连接消息");
-    
-    // 启动接收任务
-    let receive_task = tokio::spawn(async move {
-        let mut received_count = 0;
-        
-        while let Some(message_result) = receiver.next().await {
-            match message_result {
-                Ok(message) => {
-                    received_count += 1;
-                    info!("📥 [mTLS传统模式] 收到服务器消息 #{}: {} - {} [{}]", 
-                        received_count, message.user, message.message, message.message_type);
-                    
-                    // 如果收到断开确认，退出循环
-                    if message.message_type == "disconnect_ack" {
-                        info!("📥 [mTLS传统模式] 收到断开确认，准备退出");
-                        break;
-                    }
-                }
-                Err(e) => {
-                    error!("❌ [mTLS传统模式] 接收消息失败: {}", e);
-                    break;
-                }
-            }
-        }
-        
-        info!("✅ [mTLS传统模式] 接收任务完成，总共收到 {} 个消息", received_count);
-        received_count
-    });
-    
-    // 等待一段时间
-    sleep(Duration::from_secs(1)).await;
-    
-    // 发送证书验证消息
-    let cert_msg = ChatMessage {
-        user: "mTLS传统客户端".to_string(),
-        message: "请验证我的客户端证书".to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-        message_type: "cert_verification".to_string(),
-    };
-    
-    sender.send(cert_msg).await?;
-    info!("📤 [mTLS传统模式] 发送证书验证请求");
-    
-    sleep(Duration::from_secs(2)).await;
-    
-    // 发送业务消息
-    for i in 1..=3 {
-        let msg = ChatMessage {
-            user: "mTLS传统客户端".to_string(),
-            message: format!("mTLS 传统模式消息 #{}", i),
-            timestamp: chrono::Utc::now().timestamp(),
-            message_type: "business".to_string(),
-        };
-        
-        sender.send(msg).await?;
-        info!("📤 [mTLS传统模式] 发送业务消息 #{}", i);
-        
-        sleep(Duration::from_secs(2)).await;
-    }
-    
-    // 发送断开连接消息
-    let disconnect_msg = ChatMessage {
-        user: "mTLS传统客户端".to_string(),
-        message: "Goodbye from mTLS traditional client!".to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-        message_type: "disconnect".to_string(),
-    };
-    
-    sender.send(disconnect_msg).await?;
-    info!("📤 [mTLS传统模式] 发送断开连接消息");
-    
-    // 关闭发送端
-    if let Err(e) = sender.send_close().await {
-            error!("❌ [mTLS客户端] 关闭发送流失败: {}", e);
-        }
-    info!("🔌 [mTLS传统模式] 发送端已关闭");
-    
-    // 等待接收任务完成
-    let received_count = tokio::time::timeout(
-        Duration::from_secs(10),
-        receive_task
-    ).await??;
-    
-    info!("✅ [mTLS传统模式] 双向流测试完成，总共收到 {} 个响应", received_count);
-    
-    if received_count < 3 {
-        return Err(format!("响应数量不足: 期望至少3个，实际{}", received_count).into());
-    }
-    
-    Ok(())
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -647,28 +499,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     info!("🚀 启动 gRPC 客户端双向流 mTLS 示例");
     
-    // 检查命令行参数
+    // 检查命令行参数（现在只支持委托模式）
     let args: Vec<String> = std::env::args().collect();
-    
-    // 支持 --mode 参数格式
-    let mode = if args.len() > 2 && args[1] == "--mode" {
-        args[2].as_str()
-    } else if args.len() > 1 {
-        args[1].as_str()
-    } else {
-        "delegated" // 默认委托模式
-    };
-    
-    let use_delegated = mode == "delegated";
-    let use_traditional = mode == "traditional";
-    let use_both = mode == "both";
-    
-    if !use_delegated && !use_traditional && !use_both {
-        info!("📖 使用说明:");
-        info!("  delegated      运行 mTLS 委托模式测试");
-        info!("  traditional    运行 mTLS 传统模式测试");
-        info!("  both           运行 mTLS 两种模式对比测试");
-        info!("默认运行 mTLS 委托模式测试...");
+
+    if args.len() > 1 {
+        info!("📖 使用说明: 此示例现在只支持委托模式");
+        info!("  直接运行程序即可启动 mTLS 委托模式测试");
+        return Ok(());
     }
     
     // 启动 mTLS 服务器任务
@@ -681,35 +518,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 等待服务器启动
     sleep(Duration::from_secs(3)).await; // mTLS 服务器可能需要更多时间启动
     
-    // 执行测试逻辑
-    let test_result = if use_traditional {
-        // 只运行传统模式
-        run_mtls_traditional_mode().await
-    } else if use_both {
-        // 运行两种模式对比测试
-        info!("🔄 开始 mTLS 委托模式与传统模式对比测试");
-        
-        // 先运行委托模式
-        if let Err(e) = run_mtls_delegated_mode().await {
-            error!("❌ [mTLS客户端] 委托模式测试失败: {}", e);
-            return Err(e);
-        }
-        
-        // 等待一段时间再运行传统模式
-        sleep(Duration::from_secs(2)).await;
-        
-        // 再运行传统模式
-        if let Err(e) = run_mtls_traditional_mode().await {
-            error!("❌ [mTLS客户端] 传统模式测试失败: {}", e);
-            return Err(e);
-        }
-        
-        info!("✅ mTLS 两种模式对比测试完成");
-        Ok(())
-    } else {
-        // 默认运行委托模式
-        run_mtls_delegated_mode().await
-    };
+    // 执行测试逻辑（现在只支持委托模式）
+    let test_result = run_mtls_delegated_mode().await;
     
     // 处理测试结果
     match test_result {
