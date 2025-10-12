@@ -68,6 +68,84 @@ cargo build --release --features static-openssl
 - 编译超时建议设置为 40 分钟以上
 - 静态编译后的可执行文件无外部依赖，便于分发
 
+#### 🔧 Windows MSYS2 + MinGW64 环境搭建指南
+
+**第1步：安装 MSYS2**
+1. 访问 [MSYS2 官网](https://www.msys2.org/)
+2. 下载适合您系统的安装程序（64位推荐）
+3. 运行安装程序，选择安装路径（建议使用默认路径 `C:\msys64`）
+4. 完成安装后，启动 "MSYS2 MINGW64" 终端
+
+**第2步：更新软件包**
+在 MSYS2 MINGW64 终端中执行：
+```bash
+# 更新软件包数据库和基础包
+pacman -Syu
+
+# 如果提示重启终端，请关闭并重新打开终端，然后继续更新
+pacman -Su
+```
+
+**第3步：安装必要的编译工具**
+```bash
+# 安装 MinGW-w64 工具链
+pacman -S --needed base-devel mingw-w64-x86_64-toolchain
+
+# 安装 Git
+pacman -S git
+
+# 安装 OpenSSL 开发包（用于静态编译）
+pacman -S mingw-w64-x86_64-openssl
+```
+
+**第4步：安装 Rust**
+```bash
+# 通过 rustup 安装 Rust（推荐）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 或者使用 pacman 安装
+pacman -S mingw-w64-x86_64-rust
+```
+
+**第5步：验证环境**
+```bash
+# 检查编译器
+gcc --version
+g++ --version
+
+# 检查 Rust
+rustc --version
+cargo --version
+
+# 检查 Git
+git --version
+```
+
+**第6步：配置环境变量**
+在项目构建前设置编译标志：
+```bash
+# 设置兼容的编译标志（重要！）
+export CFLAGS="-O2 -fPIC"
+export CXXFLAGS="-O2 -fPIC"
+```
+
+**故障排除：**
+- 如果遇到权限问题，请以管理员身份运行 MSYS2 终端
+- 如果网络连接有问题，可以尝试更换镜像源
+- 如果编译失败，确保所有软件包都是最新版本
+
+**常用命令：**
+```bash
+# 清理编译缓存
+cargo clean
+
+# 查看安装的软件包
+pacman -Qs mingw-w64
+
+# 搜索可用软件包
+pacman -Ss 搜索关键词
+```
+
 #### Linux/macOS 环境
 
 ```bash
