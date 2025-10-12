@@ -41,9 +41,43 @@
 
 ### 安装
 
+#### Windows 环境编译 ⚠️
+
+本项目支持两种编译模式，针对不同的使用场景优化：
+
+**开发模式（快速编译，使用预编译OpenSSL）**：
 ```bash
-# 构建项目
-cargo build --release
+# 开发环境快速编译（约2-3分钟）
+cargo build
+cargo run
+```
+
+**生产模式（静态编译，无依赖问题）**：
+```bash
+# 设置环境变量（重要！）
+export CFLAGS="-O2 -fPIC"
+export CXXFLAGS="-O2 -fPIC"
+
+# 静态编译（约25-30分钟，首次编译需要下载和编译OpenSSL源码）
+cargo build --release --features static-openssl
+```
+
+**Windows 环境注意事项**：
+- 推荐使用 MSYS2 + MinGW64 环境
+- 首次静态编译需要较长时间（25-30分钟），请耐心等待
+- 编译超时建议设置为 40 分钟以上
+- 静态编译后的可执行文件无外部依赖，便于分发
+
+#### Linux/macOS 环境
+
+```bash
+# 开发编译
+cargo build
+
+# 生产编译（推荐，避免依赖问题）
+export CFLAGS="-O2 -fPIC"
+export CXXFLAGS="-O2 -fPIC"
+cargo build --release --features static-openssl
 ```
 
 ### 基本使用

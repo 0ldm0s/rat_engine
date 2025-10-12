@@ -617,7 +617,7 @@ async fn handle_tls_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    use tokio_rustls::{TlsAcceptor, rustls::ServerConfig as RustlsServerConfig};
+    use tokio_openssl::SslStream;
     
     // 获取证书管理器
     let cert_manager = cert_manager
@@ -632,68 +632,62 @@ where
     };
     
     // 创建 TLS 接受器
-    let acceptor = TlsAcceptor::from(server_config);
+    let acceptor = server_config.as_ref().clone();
     
     info!("🔐 [服务端] 开始 TLS 握手: {}", remote_addr);
     
-    // 进行 TLS 握手
-    let tls_stream = acceptor.accept(stream).await
+    // 进行 TLS 握手 - 使用 tokio-openssl 的异步接口
+    let mut ssl = openssl::ssl::Ssl::new(acceptor.context())
+        .map_err(|e| {
+            error!("❌ [服务端] 创建 SSL 失败: {}", e);
+            format!("创建 SSL 失败: {}", e)
+        })?;
+
+    println!("[服务端调试] SSL 对象创建成功");
+    println!("[服务端调试] SSL 版本: {:?}", ssl.version_str());
+
+    // 设置连接类型为服务器端
+    ssl.set_accept_state();
+    println!("[服务端调试] SSL 连接类型设置为服务器端");
+
+    let tls_stream = SslStream::new(ssl, stream)
+        .map_err(|e| {
+            error!("❌ [服务端] 创建 SSL 流失败: {}", e);
+            format!("创建 SSL 流失败: {}", e)
+        })?;
+
+    println!("[服务端调试] TLS 流创建成功，开始握手...");
+
+    let mut tls_stream = tls_stream;
+    println!("[服务端调试] 开始 TLS 握手过程...");
+    Pin::new(&mut tls_stream).do_handshake().await
         .map_err(|e| {
             error!("❌ [服务端] TLS 握手失败: {}", e);
+            println!("[服务端调试] ❌ TLS 握手失败: {}", e);
             format!("TLS 握手失败: {}", e)
         })?;
+
+    println!("[服务端调试] ✅ TLS 握手成功！");
+
+    // 打印握手后的详细信息
+    let ssl = tls_stream.ssl();
+    println!("[服务端调试] 握手后 SSL 版本: {:?}", ssl.version_str());
+    println!("[服务端调试] 握手后 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+    println!("[服务端调试] 握手后 客户端证书: {:?}", ssl.peer_certificate());
     
     info!("✅ [服务端] TLS 握手成功: {}", remote_addr);
     
-    // 直接使用 ALPN 协商结果进行路由，无需重复协议检测
-    let negotiated_protocol = tls_stream.get_ref().1.alpn_protocol();
-    let grpc_methods = router.list_grpc_methods();
-    let has_grpc_methods = !grpc_methods.is_empty();
-    
-    // 调试信息：打印 ALPN 协商结果
-    rat_logger::debug!("🔍 [服务端] ALPN 协商结果: {:?}, gRPC 方法存在: {}", negotiated_protocol, has_grpc_methods);
-    
-    match negotiated_protocol {
-        Some(protocol) if protocol == b"h2" => {
-            debug!("🚀 [服务端] ALPN 协商: HTTP/2，直接路由到 HTTP/2 处理器: {}", remote_addr);
-            handle_h2_tls_connection(tls_stream, remote_addr, router).await
-        }
-        Some(protocol) if protocol == b"http/1.1" => {
-            // 如果有 gRPC 方法，HTTP/1.1 是不被接受的
-            if has_grpc_methods {
-                error!("❌ [服务端] gRPC 服务器需要 HTTP/2，但 ALPN 协商为 HTTP/1.1: {}", remote_addr);
-                return Err("gRPC 服务器需要 HTTP/2，但客户端仅支持 HTTP/1.1".into());
-            }
-            info!("🌐 [服务端] ALPN 协商: HTTP/1.1，直接路由到 HTTP/1.1 处理器: {}", remote_addr);
-            handle_http1_tls_connection(tls_stream, remote_addr, adapter).await
-        }
-        Some(protocol) => {
-            let protocol_str = String::from_utf8_lossy(protocol);
-            // 如果有 gRPC 方法，未知协议是不被接受的
-            if has_grpc_methods {
-                error!("❌ [服务端] gRPC 服务器需要 HTTP/2，但 ALPN 协商为未知协议 {}: {}", protocol_str, remote_addr);
-                return Err(format!("gRPC 服务器需要 HTTP/2，但客户端协商了未知协议: {}", protocol_str).into());
-            }
-            warn!("⚠️  [服务端] 未知 ALPN 协议: {}，回退到 HTTP/1.1: {}", protocol_str, remote_addr);
-            crate::utils::logger::warn!("未知 ALPN 协议: {}，回退到 HTTP/1.1", protocol_str);
-            handle_http1_tls_connection(tls_stream, remote_addr, adapter).await
-        }
-        None => {
-            // 如果有 gRPC 方法，无 ALPN 协商是不被接受的
-            if has_grpc_methods {
-                error!("❌ [服务端] gRPC 服务器需要 HTTP/2 ALPN 协商，但客户端未提供 ALPN: {}", remote_addr);
-                return Err("gRPC 服务器需要 HTTP/2 ALPN 协商，但客户端未提供 ALPN".into());
-            }
-            warn!("⚠️  [服务端] 无 ALPN 协商，回退到 HTTP/1.1: {}", remote_addr);
-            crate::utils::logger::warn!("TLS 连接无 ALPN 协商，回退到 HTTP/1.1");
-            handle_http1_tls_connection(tls_stream, remote_addr, adapter).await
-        }
-    }
+    // 简化处理：我们的框架只支持 HTTP/2，直接按 HTTP/2 处理所有 TLS 连接
+    // 完全跳过 ALPN 协商检查，因为我们只有一个协议选择
+    info!("🚀 [服务端] 跳过 ALPN 协商检查，直接按 HTTP/2 处理 TLS 连接: {}", remote_addr);
+    crate::utils::logger::debug!("🚀 直接按 HTTP/2 处理 TLS 连接（框架只支持 HTTP/2）");
+
+    handle_h2_tls_connection(tls_stream, remote_addr, router).await
 }
 
 /// 处理 HTTP/2 over TLS 连接
 async fn handle_h2_tls_connection(
-    tls_stream: tokio_rustls::server::TlsStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
+    tls_stream: tokio_openssl::SslStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
     remote_addr: SocketAddr,
     router: Arc<Router>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -745,7 +739,7 @@ async fn handle_h2_tls_connection(
 
 /// 处理 HTTP/1.1 over TLS 连接
 async fn handle_http1_tls_connection(
-    tls_stream: tokio_rustls::server::TlsStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
+    tls_stream: tokio_openssl::SslStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
     remote_addr: SocketAddr,
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

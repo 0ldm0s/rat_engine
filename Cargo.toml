@@ -83,10 +83,8 @@ psi_detector = "0.1.3"
 # HTTP/2 和 gRPC 支持
 h2 = "0.4"
 # TLS 支持（默认启用，支持HTTP/2和gRPC）
-rustls = { version = "0.23", features = ["ring"] }
-rustls-pemfile = { version = "2.1" }
-webpki-roots = { version = "0.26" }
-tokio-rustls = { version = "0.26" }
+openssl = { version = "0.10" }
+tokio-openssl = "0.6"
 # 证书处理和生成（开发环境自签名证书）
 rcgen = { version = "0.12", features = ["x509-parser"] }
 x509-parser = { version = "0.16" }
@@ -135,6 +133,8 @@ compression-zstd = ["compression", "zstd"]  # + Zstd
 # 证书和TLS功能
 tls = []  # TLS支持（默认启用）
 acme = ["acme_commander"]  # ACME自动证书
+# 静态编译支持
+static-openssl = ["openssl/vendored"]  # 静态编译OpenSSL（用于release模式）
 
 # 开发功能
 dev = []  # 开发环境（已包含在默认特性中）

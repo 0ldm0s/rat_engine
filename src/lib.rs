@@ -51,10 +51,11 @@ pub use http_body_util::{Full, Empty, BodyExt};
 // 导出客户端相关类型
 #[cfg(feature = "client")]
 pub use client::{
-    RatHttpClient, RatHttpClientBuilder, RatGrpcClient, RatGrpcClientBuilder,
+    // RatHttpClient, RatHttpClientBuilder,  // 已移除HTTP客户端，只保留gRPC客户端
+    RatGrpcClient, RatGrpcClientBuilder,
     GrpcRequest, GrpcResponse, GrpcCompressionMode,
-    GrpcStreamResponse, GrpcBidirectionalStream,
-    RatHttpResponse, HttpMethod, HttpStatusCode, HttpHeaders, HttpRequestBuilder,
+    GrpcStreamResponse,
+    // RatHttpResponse, HttpMethod, HttpStatusCode, HttpHeaders, HttpRequestBuilder,  // 已移除HTTP客户端，只保留gRPC客户端
     download_metadata::{DownloadMetadataManager, DownloadMetadata, ChunkInfo, DownloadStatus},
     connection_pool::ClientConnectionPool,
 };
@@ -112,7 +113,7 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 fn rat_engine(py: Python, m: &PyModule) -> PyResult<()> {
-    // 确保 rustls CryptoProvider 已安装（Python 模块初始化时）
+    // 确保 OpenSSL 已初始化（Python 模块初始化时）
     utils::crypto_provider::ensure_crypto_provider_installed();
     
     // 注意：日志系统现在由用户手动初始化，不再在模块加载时自动初始化

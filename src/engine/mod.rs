@@ -642,32 +642,75 @@ impl ActualRatEngine {
         // 配置 ALPN 协议支持（如果引擎有证书管理器）
         if let Some(cert_manager) = &self.cert_manager {
             let mut alpn_protocols = Vec::new();
-            
+
             // 从路由器获取 gRPC 方法和 HTTP/2 配置
             if let Some(router) = &self.router {
                 let grpc_methods = router.list_grpc_methods();
                 let has_grpc_methods = !grpc_methods.is_empty();
-                
+
+                println!("[ALPN调试] 路由器状态检查:");
+                println!("[ALPN调试]   has_grpc_methods: {}", has_grpc_methods);
+                println!("[ALPN调试]   grpc_methods: {:?}", grpc_methods);
+                println!("[ALPN调试]   is_h2_enabled: {}", router.is_h2_enabled());
+                println!("[ALPN调试]   is_h2c_enabled: {}", router.is_h2c_enabled());
+
                 if router.is_h2_enabled() {
                     alpn_protocols.push(b"h2".to_vec());
+                    println!("[ALPN调试] 添加 h2 协议到 ALPN 列表");
                 }
-                
+
                 // 只有在没有 gRPC 方法且未启用 H2 或同时启用了 H2C 时才添加 HTTP/1.1 作为回退
                 // gRPC 强制要求 HTTP/2，所以不能回退到 HTTP/1.1
-                if !has_grpc_methods && (!router.is_h2_enabled() || router.is_h2c_enabled()) {
+                let should_add_http11 = !has_grpc_methods && (!router.is_h2_enabled() || router.is_h2c_enabled());
+                println!("[ALPN调试] should_add_http11: {}", should_add_http11);
+
+                if should_add_http11 {
+                    println!("[ALPN调试] 警告：正在添加 HTTP/1.1 作为回退，但这不应该在有 gRPC 方法时发生！");
                     alpn_protocols.push(b"http/1.1".to_vec());
                 }
             } else {
                 // 没有路由器时，默认支持 HTTP/1.1
+                println!("[ALPN调试] 警告：没有路由器，添加默认 HTTP/1.1 协议");
                 alpn_protocols.push(b"http/1.1".to_vec());
             }
-            
-            if let Ok(mut cert_manager_guard) = cert_manager.write() {
-                if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
-                    crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
-                    return Err(format!("ALPN 配置失败: {}", e).into());
+
+            println!("[ALPN调试] 最终 ALPN 协议列表: {:?}", alpn_protocols);
+
+            // 根据 gRPC 只使用 HTTP/2 的原则，完全跳过 ALPN 配置
+            // gRPC 不需要 ALPN 协商，直接使用 HTTP/2
+            if let Some(router) = &self.router {
+                let grpc_methods = router.list_grpc_methods();
+                let has_grpc_methods = !grpc_methods.is_empty();
+
+                if has_grpc_methods {
+                    println!("[ALPN调试] 检测到 gRPC 方法，设置 HTTP/2 ALPN（gRPC 专用）");
+                    // 为 gRPC 设置 HTTP/2 ALPN，但不进行协商
+                    if let Ok(mut cert_manager_guard) = cert_manager.write() {
+                        if let Err(e) = cert_manager_guard.configure_alpn_protocols(vec![b"h2".to_vec()]) {
+                            crate::utils::logger::error!("配置 HTTP/2 ALPN 协议失败: {}", e);
+                            return Err(format!("ALPN 配置失败: {}", e).into());
+                        }
+                        crate::utils::logger::info!("✅ HTTP/2 ALPN 协议配置成功（gRPC 模式）");
+                    }
+                } else {
+                    println!("[ALPN调试] 没有 gRPC 方法，配置 ALPN 协议");
+                    if let Ok(mut cert_manager_guard) = cert_manager.write() {
+                        if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
+                            crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
+                            return Err(format!("ALPN 配置失败: {}", e).into());
+                        }
+                        crate::utils::logger::info!("✅ ALPN 协议配置成功");
+                    }
                 }
-                crate::utils::logger::info!("✅ ALPN 协议配置成功");
+            } else {
+                println!("[ALPN调试] 没有路由器，配置 ALPN 协议");
+                if let Ok(mut cert_manager_guard) = cert_manager.write() {
+                    if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
+                        crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
+                        return Err(format!("ALPN 配置失败: {}", e).into());
+                    }
+                    crate::utils::logger::info!("✅ ALPN 协议配置成功");
+                }
             }
         }
         

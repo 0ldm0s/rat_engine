@@ -1,7 +1,7 @@
-//! gRPC 客户端双向流 TLS 示例
-//! 
+//! gRPC 客户端双向流 TLS 示例（委托模式）
+//!
 //! 展示如何使用 rat_engine 的 gRPC 客户端进行 H2 + TLS 双向流通信
-//! 使用开发模式并跳过证书验证，包含委托模式和传统模式的对比
+//! 使用开发模式并跳过证书验证，使用委托模式实现业务逻辑与传输层分离
 
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
@@ -239,9 +239,14 @@ async fn start_tls_test_server() -> Result<(), Box<dyn std::error::Error + Send 
     
     println!("🚀 [TLS服务器] 启动 TLS gRPC 服务器，监听地址: 127.0.0.1:50052");
     
+    // 配置调试级别日志
+    let mut log_config = rat_engine::utils::logger::LogConfig::default();
+    log_config.level = rat_engine::utils::logger::LogLevel::Debug;
+
     // 使用新的 RatEngineBuilder 架构配置开发模式证书
     let engine = RatEngine::builder()
         .router(router)
+        .with_log_config(log_config)
         .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()])
         .await
         .map_err(|e| format!("配置开发模式失败: {}", e))?
@@ -342,136 +347,6 @@ async fn run_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 运行传统模式测试（统一化版本）
-async fn run_traditional_mode() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 启动 TLS 传统模式双向流测试（统一化版本）...");
-    
-    // 创建客户端 - 使用 HTTPS 和开发模式（跳过证书验证）
-    let client = RatGrpcClientBuilder::new()
-        .connect_timeout(Duration::from_secs(10))?
-        .request_timeout(Duration::from_secs(30))?
-        .max_idle_connections(10)?
-        .http2_only() // 强制使用 HTTP/2
-        .user_agent("rat-engine-tls-example/1.0")?
-        .disable_compression()
-        .development_mode() // 启用开发模式，跳过证书验证
-        .build()?;
-    
-    // 使用统一化的双向流接口
-    let bidirectional_stream = client.call_bidirectional_stream_with_uri::<ChatMessage, ChatMessage>(
-        "https://127.0.0.1:50052",
-        "chat.ChatService", 
-        "BidirectionalChat", 
-        None
-    ).await?;
-    
-    // 从双向流中提取发送端和接收端
-    let (mut request_sender, mut response_stream) = bidirectional_stream.into_parts();
-    
-    // 发送初始连接消息
-    let join_message = ChatMessage {
-        user: "TLS传统客户端".to_string(),
-        message: "Hello from TLS traditional client!".to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-    };
-    
-    request_sender.send(join_message).await?;
-    println!("📤 [TLS客户端] 向服务器发送初始连接消息");
-    
-    // 启动消息发送任务
-    let mut sender = request_sender.clone();
-    let send_task = tokio::spawn(async move {
-        sleep(Duration::from_secs(1)).await;
-        
-        for i in 1..=5 {
-            let message = ChatMessage {
-                user: "TLS传统客户端".to_string(),
-                message: format!("TLS传统消息 #{}", i),
-                timestamp: chrono::Utc::now().timestamp(),
-            };
-            
-            let message_content = message.message.clone();
-            if let Err(e) = sender.send(message).await {
-                eprintln!("❌ [TLS客户端] 向服务器发送消息失败: {}", e);
-                break;
-            }
-            println!("📤 [TLS客户端] 向服务器发送消息 #{}: {}", i, message_content);
-            
-            sleep(Duration::from_secs(2)).await;
-        }
-        
-        println!("📤 [TLS客户端] 传统模式消息发送完成");
-        
-        // 发送关闭指令
-        println!("📤 [TLS传统模式] 发送关闭指令");
-        if let Err(e) = sender.send_close().await {
-            eprintln!("❌ [TLS客户端] 发送关闭指令失败: {}", e);
-        }
-        
-        // 关闭发送流
-        drop(sender);
-        println!("🧹 [TLS客户端] 传统模式发送流已关闭");
-    });
-    
-    // 接收响应任务
-    let receive_task = tokio::spawn(async move {
-        let mut received_count = 0;
-        let mut consecutive_errors = 0;
-        
-        while let Some(result) = response_stream.next().await {
-            match result {
-                Ok(msg) => {
-                    received_count += 1;
-                    consecutive_errors = 0; // 重置错误计数
-                    println!("📥 [TLS客户端] 收到服务器消息 #{}: {} - {}", received_count, msg.user, msg.message);
-                    
-                    // 不再提前退出，等待流自然结束或关闭指令
-                }
-                Err(e) => {
-                    consecutive_errors += 1;
-                    let error_msg = format!("{}", e);
-                    
-                    // 检查是否是正常的流结束
-                    if error_msg.contains("UnexpectedEnd") || error_msg.contains("connection closed") {
-                        println!("📥 [TLS客户端] 服务器正常关闭连接，接收任务完成");
-                        break;
-                    }
-                    
-                    eprintln!("❌ [TLS客户端] 接收服务器响应失败 ({}): {}", consecutive_errors, e);
-                    
-                    // 如果连续错误太多，退出
-                    if consecutive_errors >= 3 {
-                        eprintln!("❌ [TLS客户端] 连续错误过多，强制退出接收任务");
-                        break;
-                    }
-                }
-            }
-        }
-        
-        println!("🧹 [TLS客户端] 传统模式接收流已关闭，共接收 {} 条消息", received_count);
-        received_count
-    });
-    
-    // 等待所有任务完成，设置更长的超时时间
-    let timeout_duration = Duration::from_secs(60); // 增加到60秒
-    match tokio::time::timeout(timeout_duration, async {
-        tokio::try_join!(send_task, receive_task)
-    }).await {
-        Ok(Ok((_, received_count))) => {
-            println!("✅ [TLS传统模式] 测试完成 - 接收: {}", received_count);
-        }
-        Ok(Err(e)) => {
-            eprintln!("❌ [TLS传统模式] 任务执行失败: {}", e);
-            return Err(Box::new(e));
-        }
-        Err(_) => {
-            eprintln!("⏰ [TLS传统模式] 测试超时（60秒），可能存在死锁或网络问题");
-            return Err("TLS传统模式测试超时".into());
-        }
-    }
-    
-    Ok(())
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -485,28 +360,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("🚀 启动 gRPC 客户端双向流 TLS 示例 (开发模式 + 跳过证书验证)");
     
-    // 检查命令行参数
+    // 检查命令行参数（现在只支持委托模式）
     let args: Vec<String> = std::env::args().collect();
-    
-    // 支持 --mode 参数格式
-    let mode = if args.len() > 2 && args[1] == "--mode" {
-        args[2].as_str()
-    } else if args.len() > 1 {
-        args[1].as_str()
-    } else {
-        "delegated" // 默认委托模式
-    };
-    
-    let use_delegated = mode == "delegated";
-    let use_traditional = mode == "traditional";
-    let use_both = mode == "both";
-    
-    if !use_delegated && !use_traditional && !use_both {
-        println!("📖 使用说明:");
-        println!("  delegated      运行 TLS 委托模式测试");
-        println!("  traditional    运行 TLS 传统模式测试");
-        println!("  both           运行 TLS 两种模式对比测试");
-        println!("默认运行 TLS 委托模式测试...");
+
+    if args.len() > 1 {
+        println!("📖 使用说明: 此示例现在只支持委托模式");
+        println!("  直接运行程序即可启动 TLS 委托模式测试");
+        return Ok(());
     }
     
     // 启动 TLS 服务器任务
@@ -519,35 +379,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 等待服务器启动
     sleep(Duration::from_secs(3)).await; // TLS 服务器可能需要更多时间启动
     
-    // 执行测试逻辑
-    let test_result = if use_traditional {
-        // 只运行传统模式
-        run_traditional_mode().await
-    } else if use_both {
-        // 运行两种模式对比测试
-        println!("🔄 开始 TLS 委托模式与传统模式对比测试");
-        
-        // 先运行委托模式
-        if let Err(e) = run_delegated_mode().await {
-            eprintln!("❌ [TLS客户端] 委托模式测试失败: {}", e);
-            return Err(e);
-        }
-        
-        // 等待一段时间再运行传统模式
-        sleep(Duration::from_secs(2)).await;
-        
-        // 再运行传统模式
-        if let Err(e) = run_traditional_mode().await {
-            eprintln!("❌ [TLS客户端] 传统模式测试失败: {}", e);
-            return Err(e);
-        }
-        
-        println!("✅ TLS 两种模式对比测试完成");
-        Ok(())
-    } else {
-        // 默认运行委托模式
-        run_delegated_mode().await
-    };
+    // 执行测试逻辑（现在只支持委托模式）
+    let test_result = run_delegated_mode().await;
     
     // 处理测试结果
     match test_result {

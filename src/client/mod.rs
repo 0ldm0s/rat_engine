@@ -45,9 +45,6 @@
 //! # }
 //! ```
 
-pub mod builder;
-pub mod http_client;
-pub mod http_client_delegated;
 pub mod grpc_client;
 pub mod grpc_builder;
 pub mod grpc_client_delegated;
@@ -58,17 +55,17 @@ pub mod connection_pool;
 #[cfg(feature = "reqwest")]
 pub mod independent_http_client;
 
-#[cfg(any(feature = "client", feature = "http-client"))]
-pub use builder::RatHttpClientBuilder;
-#[cfg(any(feature = "client", feature = "http-client"))]
-pub use http_client::{RatHttpClient, RatHttpResponse};
-#[cfg(any(feature = "client", feature = "http-client"))]
-pub use http_client_delegated::{HttpRequestHandler, HttpRequestManager};
+// #[cfg(any(feature = "client", feature = "http-client"))]
+// pub use builder::RatHttpClientBuilder;  // 已移除HTTP客户端，只保留gRPC客户端
+// #[cfg(any(feature = "client", feature = "http-client"))]
+// pub use http_client::{RatHttpClient, RatHttpResponse};  // 已移除HTTP客户端，只保留gRPC客户端
+// #[cfg(any(feature = "client", feature = "http-client"))]
+// pub use http_client_delegated::{HttpRequestHandler, HttpRequestManager};  // 已移除HTTP客户端，只保留gRPC客户端
 
 #[cfg(any(feature = "client", feature = "grpc-client"))]
 pub use grpc_client::{
     RatGrpcClient, GrpcRequest, GrpcResponse, GrpcCompressionMode,
-    GrpcStreamMessage, GrpcStreamResponse, GrpcBidirectionalStream,
+    GrpcStreamMessage, GrpcStreamResponse,
 };
 #[cfg(any(feature = "client", feature = "grpc-client"))]
 pub use grpc_client_delegated::{

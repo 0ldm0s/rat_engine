@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::io::Read;
-use crate::client::builder::ClientProtocolMode;
 use hyper::{Request, Response, Method, Uri, StatusCode};
 use hyper::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT, CONTENT_TYPE, CONTENT_ENCODING, ACCEPT_ENCODING};
 use hyper::body::Incoming;
@@ -35,6 +34,13 @@ use crate::client::connection_pool::{ClientConnectionPool, ConnectionPoolConfig}
 use crate::client::grpc_client_delegated::{ClientBidirectionalHandler, ClientStreamContext, ClientStreamSender, ClientBidirectionalManager, ClientStreamInfo};
 use crate::server::grpc_codec::GrpcCodec;
 use crate::utils::logger::{debug, info, warn, error};
+
+// OpenSSL 相关导入
+use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use openssl::x509::X509;
+use openssl::pkey::PKey;
+use openssl::pkcs12::Pkcs12;
+use tokio_openssl::SslStream;
 
 // 条件导入 Python API
 #[cfg(feature = "python")]
@@ -80,21 +86,6 @@ pub struct GrpcStreamResponse<T> {
     pub stream: Pin<Box<dyn Stream<Item = Result<GrpcStreamMessage<T>, RatError>> + Send>>,
 }
 
-/// gRPC 双向流连接
-pub struct GrpcBidirectionalStream<S, R> {
-    /// 发送端（与示例期望的字段名匹配）
-    pub sender: GrpcStreamSender<S>,
-    /// 接收端（与示例期望的字段名匹配）
-    pub receiver: GrpcStreamReceiver<R>,
-    /// 发送任务句柄
-    pub send_task: Option<tokio::task::JoinHandle<()>>,
-    /// 接收任务句柄
-    pub recv_task: Option<tokio::task::JoinHandle<()>>,
-    /// 连接ID
-    connection_id: String,
-    /// 连接池引用
-    connection_pool: Arc<ClientConnectionPool>,
-}
 
 /// gRPC 流发送端
 pub struct GrpcStreamSender<T> {
@@ -296,7 +287,7 @@ impl Clone for RatGrpcClient {
             mtls_config: self.mtls_config.as_ref().map(|config| {
                 crate::client::grpc_builder::MtlsClientConfig {
                     client_cert_chain: config.client_cert_chain.clone(),
-                    client_private_key: config.client_private_key.clone_key(),
+                    client_private_key: config.client_private_key.clone(),
                     ca_certs: config.ca_certs.clone(),
                     skip_server_verification: config.skip_server_verification,
                     server_name: config.server_name.clone(),
@@ -351,8 +342,7 @@ impl RatGrpcClient {
             max_connections_per_target: max_idle_connections,
             development_mode, // 传递开发模式配置
             mtls_config: mtls_config.clone(), // 传递 mTLS 配置给连接池
-            protocol_mode: ClientProtocolMode::Auto, // gRPC 默认使用自动模式
-        };
+            };
 
         // 创建连接池
         let mut connection_pool = ClientConnectionPool::new(pool_config);
@@ -683,186 +673,112 @@ impl RatGrpcClient {
     }
 
     /// 创建 TLS 配置（支持开发模式）
-    fn create_tls_config(&self) -> RatResult<rustls::ClientConfig> {
-        use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-        use rustls::{pki_types, Error as RustlsError};
-        
+    fn create_tls_config(&self) -> RatResult<SslConnector> {
+        println!("[客户端ALPN调试] 创建 TLS 配置，development_mode={}", self.development_mode);
         // 检查是否有 mTLS 配置
         if let Some(mtls_config) = &self.mtls_config {
             info!("🔐 启用 mTLS 客户端证书认证");
-            
-            // 构建根证书存储
-            let mut root_store = rustls::RootCertStore::empty();
-            
+
+            // 创建 OpenSSL SSL 连接器
+            let mut ssl_connector = SslConnector::builder(SslMethod::tls())
+                .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+
+  
+            // 配置 CA 证书
             if let Some(ca_certs) = &mtls_config.ca_certs {
                 // 使用自定义 CA 证书
-                for ca_cert in ca_certs {
-                    root_store.add(ca_cert.clone())
-                        .map_err(|e| RatError::TlsError(format!("添加 CA 证书失败: {}", e)))?;
+                for ca_cert_der in ca_certs {
+                    let ca_cert = X509::from_der(ca_cert_der)
+                        .map_err(|e| RatError::TlsError(format!("解析 CA 证书失败: {}", e)))?;
+                    ssl_connector.cert_store_mut()
+                        .add_cert(ca_cert)
+                        .map_err(|e| RatError::TlsError(format!("添加 CA 证书到存储失败: {}", e)))?;
                 }
                 info!("✅ 已加载 {} 个自定义 CA 证书", ca_certs.len());
             } else {
                 // 使用系统默认根证书
-                root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                ssl_connector.set_default_verify_paths()
+                    .map_err(|e| RatError::TlsError(format!("设置默认证书路径失败: {}", e)))?;
                 info!("✅ 已加载系统默认根证书");
             }
-            
-            // 创建客户端证书链
-            let client_cert_chain = mtls_config.client_cert_chain.clone();
-            let client_private_key = mtls_config.client_private_key.clone_key();
-            
-            let mut tls_config = if mtls_config.skip_server_verification {
+
+            // 配置客户端证书和私钥
+            let client_cert_chain = &mtls_config.client_cert_chain;
+            let client_private_key = mtls_config.client_private_key.clone();
+
+            // 使用第一个证书作为客户端证书
+            if let Some(client_cert_der) = client_cert_chain.first() {
+                let client_cert = X509::from_der(client_cert_der)
+                    .map_err(|e| RatError::TlsError(format!("解析客户端证书失败: {}", e)))?;
+
+                // 从私钥中提取私钥
+                let private_key = PKey::private_key_from_der(&client_private_key)
+                    .map_err(|e| RatError::TlsError(format!("解析私钥失败: {}", e)))?;
+
+                ssl_connector.set_certificate(&client_cert)
+                    .map_err(|e| RatError::TlsError(format!("设置客户端证书失败: {}", e)))?;
+                ssl_connector.set_private_key(&private_key)
+                    .map_err(|e| RatError::TlsError(format!("设置私钥失败: {}", e)))?;
+                ssl_connector.check_private_key()
+                    .map_err(|e| RatError::TlsError(format!("私钥证书匹配检查失败: {}", e)))?;
+
+                info!("✅ 客户端证书配置完成");
+            } else {
+                return Err(RatError::TlsError("未找到客户端证书".to_string()));
+            }
+
+            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+            ssl_connector.set_alpn_protos(b"\x02h2")?;
+            println!("[客户端ALPN调试] mTLS 模式设置 ALPN 协议: h2");
+
+            if mtls_config.skip_server_verification {
                 // 跳过服务器证书验证（仅用于测试）
                 warn!("⚠️  警告：已启用跳过服务器证书验证模式！仅用于测试环境！");
-                
-                #[derive(Debug)]
-                struct DangerousClientCertVerifier;
-                
-                impl ServerCertVerifier for DangerousClientCertVerifier {
-                    fn verify_server_cert(
-                        &self,
-                        _end_entity: &pki_types::CertificateDer<'_>,
-                        _intermediates: &[pki_types::CertificateDer<'_>],
-                        _server_name: &pki_types::ServerName<'_>,
-                        _ocsp_response: &[u8],
-                        _now: pki_types::UnixTime,
-                    ) -> Result<ServerCertVerified, RustlsError> {
-                        Ok(ServerCertVerified::assertion())
-                    }
-                    
-                    fn verify_tls12_signature(
-                        &self,
-                        _message: &[u8],
-                        _cert: &pki_types::CertificateDer<'_>,
-                        _dss: &rustls::DigitallySignedStruct,
-                    ) -> Result<HandshakeSignatureValid, RustlsError> {
-                        Ok(HandshakeSignatureValid::assertion())
-                    }
-                    
-                    fn verify_tls13_signature(
-                        &self,
-                        _message: &[u8],
-                        _cert: &pki_types::CertificateDer<'_>,
-                        _dss: &rustls::DigitallySignedStruct,
-                    ) -> Result<HandshakeSignatureValid, RustlsError> {
-                        Ok(HandshakeSignatureValid::assertion())
-                    }
-                    
-                    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                        vec![
-                            rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                            rustls::SignatureScheme::RSA_PSS_SHA256,
-                            rustls::SignatureScheme::RSA_PSS_SHA384,
-                            rustls::SignatureScheme::RSA_PSS_SHA512,
-                            rustls::SignatureScheme::ED25519,
-                            rustls::SignatureScheme::ED448,
-                        ]
-                    }
-                }
-                
-                rustls::ClientConfig::builder()
-                    .dangerous()
-                    .with_custom_certificate_verifier(std::sync::Arc::new(DangerousClientCertVerifier))
-                    .with_client_auth_cert(client_cert_chain, client_private_key)
-                    .map_err(|e| RatError::TlsError(format!("配置客户端证书失败: {}", e)))?
+                ssl_connector.set_verify(SslVerifyMode::NONE);
             } else {
                 // 正常的服务器证书验证
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_client_auth_cert(client_cert_chain, client_private_key)
-                    .map_err(|e| RatError::TlsError(format!("配置客户端证书失败: {}", e)))?
-            };
-            
-            // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-            tls_config.alpn_protocols = vec![b"h2".to_vec()];
-            
+                ssl_connector.set_verify(SslVerifyMode::PEER);
+            }
+
             info!("✅ mTLS 客户端配置完成");
-            Ok(tls_config)
+            Ok(ssl_connector.build())
         } else if self.development_mode {
             // 开发模式：跳过证书验证
             warn!("⚠️  警告：gRPC 客户端已启用开发模式，将跳过所有 TLS 证书验证！仅用于开发环境！");
-            
-            #[derive(Debug)]
-            struct DangerousClientCertVerifier;
-            
-            impl ServerCertVerifier for DangerousClientCertVerifier {
-                fn verify_server_cert(
-                    &self,
-                    _end_entity: &pki_types::CertificateDer<'_>,
-                    _intermediates: &[pki_types::CertificateDer<'_>],
-                    _server_name: &pki_types::ServerName<'_>,
-                    _ocsp_response: &[u8],
-                    _now: pki_types::UnixTime,
-                ) -> Result<ServerCertVerified, RustlsError> {
-                    Ok(ServerCertVerified::assertion())
-                }
-                
-                fn verify_tls12_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &pki_types::CertificateDer<'_>,
-                    _dss: &rustls::DigitallySignedStruct,
-                ) -> Result<HandshakeSignatureValid, RustlsError> {
-                    Ok(HandshakeSignatureValid::assertion())
-                }
-                
-                fn verify_tls13_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &pki_types::CertificateDer<'_>,
-                    _dss: &rustls::DigitallySignedStruct,
-                ) -> Result<HandshakeSignatureValid, RustlsError> {
-                    Ok(HandshakeSignatureValid::assertion())
-                }
-                
-                fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                    vec![
-                        rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                        rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                        rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                        rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                        rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                        rustls::SignatureScheme::RSA_PSS_SHA256,
-                        rustls::SignatureScheme::RSA_PSS_SHA384,
-                        rustls::SignatureScheme::RSA_PSS_SHA512,
-                        rustls::SignatureScheme::ED25519,
-                        rustls::SignatureScheme::ED448,
-                    ]
-                }
-            }
-            
-            let mut tls_config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(std::sync::Arc::new(DangerousClientCertVerifier))
-                .with_no_client_auth();
-            
-            // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-            tls_config.alpn_protocols = vec![b"h2".to_vec()];
-            
-            Ok(tls_config)
+
+            let mut ssl_connector = SslConnector::builder(SslMethod::tls())
+                .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+
+            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+            ssl_connector.set_alpn_protos(b"\x02h2")?;
+            println!("[客户端ALPN调试] 开发模式设置 ALPN 协议: h2");
+
+            // 跳过证书验证
+            ssl_connector.set_verify(SslVerifyMode::NONE);
+
+            // 开发模式下保持标准协议版本，仅跳过证书验证
+
+            info!("✅ 开发模式 SSL 连接器配置完成");
+            Ok(ssl_connector.build())
         } else {
             // 非开发模式：严格证书验证
-            let mut root_store = rustls::RootCertStore::empty();
-            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            
-            let mut tls_config = rustls::ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth();
-            
-            // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
-            tls_config.alpn_protocols = vec![b"h2".to_vec()];
-            
-            Ok(tls_config)
+            let mut ssl_connector = SslConnector::builder(SslMethod::tls())
+                .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+
+  
+            // 设置系统默认证书路径
+            ssl_connector.set_default_verify_paths()
+                .map_err(|e| RatError::TlsError(format!("设置默认证书路径失败: {}", e)))?;
+
+            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
+            ssl_connector.set_alpn_protos(b"\x02h2")?;
+            println!("[客户端ALPN调试] 标准模式设置 ALPN 协议: h2");
+
+            // 严格证书验证
+            ssl_connector.set_verify(SslVerifyMode::PEER);
+
+            info!("✅ 标准模式 SSL 连接器配置完成");
+            Ok(ssl_connector.build())
         }
     }
 
@@ -888,30 +804,65 @@ impl RatGrpcClient {
         // 根据协议类型进行握手
         let client = if is_https {
             // HTTPS: 先进行 TLS 握手，再进行 H2 握手
-            use rustls::pki_types::ServerName;
-            
-            let tls_config = self.create_tls_config()?;
-            let tls_connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
-            
-            let server_name = ServerName::try_from(host.to_string())
-                .map_err(|e| RatError::RequestError(format!("无效的服务器名称 '{}': {}", host, e)))?;
-            
-            let tls_stream = tls_connector.connect(server_name, tcp_stream).await
-                .map_err(|e| RatError::NetworkError(format!("TLS 连接失败: {}", e)))?;
-            
+            let ssl_connector = self.create_tls_config()?;
+
+            // 使用异步 TLS 连接
+            let mut ssl = openssl::ssl::Ssl::new(&ssl_connector.context())
+                .map_err(|e| RatError::NetworkError(format!("创建 SSL 失败: {}", e)))?;
+
+            // 配置服务器名称验证（SNI）- 必须在创建 SSL 对象后设置
+            if let Some(ref mtls_config) = self.mtls_config {
+                if let Some(ref server_name) = mtls_config.server_name {
+                    ssl.set_hostname(server_name)
+                        .map_err(|e| RatError::NetworkError(format!("设置 SNI 主机名失败: {}", e)))?;
+                } else {
+                    ssl.set_hostname(host)
+                        .map_err(|e| RatError::NetworkError(format!("设置默认主机名失败: {}", e)))?;
+                }
+            } else {
+                ssl.set_hostname(host)
+                    .map_err(|e| RatError::NetworkError(format!("设置主机名失败: {}", e)))?;
+            }
+
+            // 设置连接类型为客户端
+            ssl.set_connect_state();
+        let mut ssl_stream = SslStream::new(ssl, tcp_stream)
+                .map_err(|e| RatError::NetworkError(format!("创建 TLS 流失败: {}", e)))?;
+
+        // 使用异步方式完成 TLS 握手
+        use futures_util::future::poll_fn;
+        poll_fn(|cx| {
+            match std::pin::Pin::new(&mut ssl_stream).poll_do_handshake(cx) {
+                std::task::Poll::Ready(Ok(())) => {
+                    println!("[客户端调试] ✅ TLS 握手成功！");
+                    println!("[客户端调试] TLS 连接信息:");
+                    let ssl = ssl_stream.ssl();
+                    println!("[客户端调试]   版本: {:?}", ssl.version_str());
+                    println!("[客户端调试]   ALPN 协议: {:?}", ssl.selected_alpn_protocol());
+                    println!("[客户端调试]   服务器证书: {:?}", ssl.peer_certificate());
+                    std::task::Poll::Ready(Ok(()))
+                },
+                std::task::Poll::Ready(Err(e)) => {
+                    println!("[客户端调试] ❌ TLS 握手失败: {}", e);
+                    std::task::Poll::Ready(Err(e))
+                },
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        }).await.map_err(|e| RatError::NetworkError(format!("TLS 握手失败: {}", e)))?;
+
             debug!("🔐 TLS 连接建立成功，开始 HTTP/2 握手");
-            
-            let (client, h2_connection) = h2::client::handshake(tls_stream)
+
+            let (client, h2_connection) = h2::client::handshake(ssl_stream)
                 .await
                 .map_err(|e| RatError::NetworkError(format!("HTTP/2 over TLS 握手失败: {}", e)))?;
-            
+
             // 在后台运行 H2 连接
             tokio::spawn(async move {
                 if let Err(e) = h2_connection.await {
                     error!("❌ H2 连接错误: {}", e);
                 }
             });
-            
+
             client
         } else {
             // H2C: 直接进行 H2 握手
@@ -2158,219 +2109,6 @@ impl RatGrpcClient {
         })
     }
 
-    /// 创建双向流 gRPC 连接（传统模式）
-    /// 
-    /// 参考成功示例的实现，使用 H2 流和 bincode 序列化
-    /// 
-    /// # 参数
-    /// * `service` - 服务名称
-    /// * `method` - 方法名称
-    /// * `metadata` - 可选的元数据
-    /// 
-    /// # 返回
-    /// 返回双向流连接
-    /// 
-    /// # 弃用警告
-    /// 此方法已弃用，请使用 `call_bidirectional_stream_with_uri` 方法
-    #[deprecated(note = "请使用 call_bidirectional_stream_with_uri 方法")]
-    pub async fn call_bidirectional_stream<S, R>(
-        &self, 
-        service: &str, 
-        method: &str, 
-        metadata: Option<HashMap<String, String>>
-    ) -> RatResult<GrpcBidirectionalStream<S, R>>
-    where
-        S: Serialize + Send + Sync + 'static + bincode::Encode,
-        R: for<'de> Deserialize<'de> + Send + Sync + Unpin + 'static + bincode::Decode<()>,
-    {
-        self.call_bidirectional_stream_with_uri("http://localhost", service, method, metadata).await
-    }
-
-    /// 返回双向流连接（带 URI 参数）
-    pub async fn call_bidirectional_stream_with_uri<S, R>(
-        &self,
-        uri: &str,
-        service: &str, 
-        method: &str, 
-        metadata: Option<HashMap<String, String>>
-    ) -> RatResult<GrpcBidirectionalStream<S, R>>
-    where
-        S: Serialize + Send + Sync + 'static + bincode::Encode,
-        R: for<'de> Deserialize<'de> + Send + Sync + Unpin + 'static + bincode::Decode<()>,
-    {
-        let base_uri: Uri = uri.parse().map_err(|e| RatError::InvalidArgument(format!("无效的 URI: {}", e)))?;
-        
-        // 从连接池获取连接
-        let connection = self.connection_pool.get_connection(&base_uri).await
-            .map_err(|e| RatError::NetworkError(format!("获取连接失败: {}", e)))?;
-        let mut send_request = connection.send_request.clone();
-
-        // 构建请求路径
-        let path = format!("/{}/{}", service, method);
-
-        // 创建双向流请求（参考成功示例）
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(path)
-            .header("content-type", "application/grpc")
-            .header("grpc-encoding", "identity")
-            .header("te", "trailers")
-            .header(USER_AGENT, &self.user_agent)
-            .body(())
-            .map_err(|e| RatError::RequestError(format!("构建双向流请求失败: {}", e)))?;
-
-        // 发送请求并获取响应流
-        let (response, send_stream) = send_request.send_request(request, false)
-            .map_err(|e| RatError::NetworkError(format!("发送双向流请求失败: {}", e)))?;
-
-        // 创建发送和接收通道
-        let (send_tx, send_rx) = mpsc::unbounded_channel::<Bytes>();
-        let (recv_tx, recv_rx) = mpsc::unbounded_channel::<Bytes>();
-
-        // 启动发送任务（使用 GrpcCodec 统一编码）
-        let connection_id = connection.connection_id.clone();
-        let connection_pool = self.connection_pool.clone();
-        let send_task = {
-            let mut send_stream = send_stream;
-            tokio::spawn(async move {
-                let mut send_rx = send_rx;
-                let mut message_sent = false;
-                let mut stream_closed = false;
-                
-                while let Some(data) = send_rx.recv().await {
-                    if stream_closed {
-                        warn!("⚠️ [客户端] 流已关闭，跳过发送数据");
-                        continue;
-                    }
-                    
-                    message_sent = true;
-                    
-                    // data 是通过 GrpcStreamSender 序列化后的原始数据，需要包装成 gRPC 帧格式
-                    let frame = GrpcCodec::create_frame(&data);
-                    let frame_len = frame.len();
-                    if let Err(e) = send_stream.send_data(Bytes::from(frame), false) {
-                        let error_msg = e.to_string();
-                        if error_msg.contains("inactive stream") || error_msg.contains("channel closed") {
-                            info!("ℹ️ [客户端] 流已关闭，停止发送数据");
-                            stream_closed = true;
-                        } else {
-                            error!("❌ [客户端] 向服务器发送数据失败: {}", e);
-                        }
-                        break;
-                    }
-                    
-                    info!("📤 [客户端] 成功发送 gRPC 帧，大小: {} 字节", frame_len);
-                }
-                
-                // 发送结束信号（参考成功示例）
-                if message_sent && !stream_closed {
-                    if let Err(e) = send_stream.send_data(Bytes::new(), true) {
-                        // 如果是 inactive stream 错误，这是正常的，不需要记录为错误
-                        if e.to_string().contains("inactive stream") {
-                            info!("ℹ️ [客户端] 流已关闭，结束信号发送被忽略");
-                        } else {
-                            error!("❌ [客户端] 发送结束信号失败: {}", e);
-                        }
-                    } else {
-                        info!("✅ [客户端] 发送流已结束");
-                    }
-                }
-                
-                // 释放连接回连接池
-                connection_pool.release_connection(&connection_id);
-                info!("🔄 [客户端] 消息发送完成，连接已释放");
-            })
-        };
-
-        // 启动接收任务（使用 GrpcCodec 统一解码）
-        let recv_task = {
-            tokio::spawn(async move {
-                info!("🔄 [客户端] 启动双向流接收任务，等待服务器响应...");
-                match response.await {
-                    Ok(response) => {
-                        let status = response.status();
-                        info!("📥 [客户端] 收到服务器响应头，状态: {}", status);
-                        debug!("🔍 [客户端] 响应头详情: {:?}", response.headers());
-                        
-                        let mut body = response.into_body();
-                        let mut buffer = Vec::new();
-                        
-                        // 接收响应流（使用 GrpcCodec 统一解码）
-                        info!("🔄 [客户端] 开始接收响应流数据...");
-                        while let Some(chunk_result) = body.data().await {
-                            debug!("📦 [客户端] 收到数据块结果: {:?}", chunk_result.is_ok());
-                            match chunk_result {
-                                Ok(chunk) => {
-                                    info!("📦 [客户端] 收到数据块，大小: {} 字节", chunk.len());
-                                    buffer.extend_from_slice(&chunk);
-                                    
-                                    // 使用 GrpcCodec 解析 gRPC 消息帧
-                    loop {
-                        match GrpcCodec::try_parse_frame(&buffer) {
-                            Some((message_data, consumed)) => {
-                                // message_data 是 gRPC 帧的负载部分，包含序列化的 GrpcStreamMessage<Vec<u8>>
-                                // 需要先反序列化为 GrpcStreamMessage，然后提取其中的 data 字段
-                                match GrpcCodec::decode::<GrpcStreamMessage<Vec<u8>>>(message_data) {
-                                    Ok(stream_message) => {
-                                        // 检查是否是流结束消息
-                                        if stream_message.end_of_stream {
-                                            info!("📥 [客户端] 收到流结束信号");
-                                            return;
-                                        }
-                                        
-                                        // 记录数据长度（在移动前）
-                                        let data_len = stream_message.data.len();
-                                        let sequence = stream_message.sequence;
-                                        
-                                        // 提取实际的消息数据（已序列化的目标类型）
-                                        if let Err(e) = recv_tx.send(Bytes::from(stream_message.data)) {
-                                            error!("❌ [客户端] 接收通道发送失败: {}", e);
-                                            return;
-                                        }
-                                        
-                                        info!("📥 [客户端] 成功解析并转发流消息，序列号: {}, 数据大小: {} 字节", 
-                                                         sequence, data_len);
-                                    }
-                                    Err(e) => {
-                                        error!("❌ [客户端] 反序列化 GrpcStreamMessage 失败: {}", e);
-                                        return;
-                                    }
-                                }
-                                
-                                // 移除已处理的数据
-                                buffer.drain(0..consumed);
-                            }
-                            None => {
-                                // 数据不完整，等待更多数据
-                                break;
-                            }
-                        }
-                    }
-                                }
-                                Err(e) => {
-                                    error!("❌ [客户端] 接收服务器数据失败: {}", e);
-                                    break;
-                                }
-                         }
-                        }
-                        info!("✅ [客户端] 消息接收完成");
-                    }
-                    Err(e) => {
-                        error!("❌ [客户端] 接收服务器响应失败: {}", e);
-                    }
-                }
-            })
-        };
-
-        Ok(GrpcBidirectionalStream {
-            sender: GrpcStreamSender::new(send_tx),
-            receiver: GrpcStreamReceiver::new(recv_rx),
-            send_task: Some(send_task),
-            recv_task: Some(recv_task),
-            connection_id: connection.connection_id.clone(),
-            connection_pool: self.connection_pool.clone(),
-        })
-    }
 
     /// 创建服务端流 - 直接使用 H2 RecvStream
     fn create_server_stream<R>(&self, mut recv_stream: RecvStream) -> Pin<Box<dyn Stream<Item = Result<GrpcStreamMessage<R>, RatError>> + Send>>
@@ -2548,104 +2286,6 @@ impl RatGrpcClient {
         Box::pin(stream)
     }
 
-    /// 创建基于 H2 的双向流
-    async fn create_h2_bidirectional_stream<T, R>(
-        &self,
-        mut send_stream: h2::SendStream<bytes::Bytes>,
-        response: h2::client::ResponseFuture,
-        _stream_id: u64,
-    ) -> RatResult<(mpsc::Sender<T>, Pin<Box<dyn Stream<Item = Result<R, RatError>> + Send>>)>
-    where
-        T: Serialize + Send + Sync + 'static + bincode::Encode,
-        R: for<'de> Deserialize<'de> + Send + Sync + 'static + bincode::Decode<()>,
-    {
-        // 创建发送通道
-        let (sender, mut receiver) = mpsc::channel::<T>(100);
-        
-        // 启动发送任务
-        tokio::spawn(async move {
-            let mut message_sent = false;
-            
-            while let Some(message) = receiver.recv().await {
-                message_sent = true;
-                
-                // 使用统一的编解码器编码并创建帧
-                match GrpcCodec::encode_frame(&message) {
-                    Ok(frame) => {
-                        
-                        // 发送消息
-                        if let Err(e) = send_stream.send_data(frame.into(), false) {
-                            eprintln!("发送消息失败: {}", e);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("编码 gRPC 消息失败: {}", e);
-                        break;
-                    }
-                }
-            }
-            
-            // 当发送通道关闭时，如果发送过消息，则发送结束信号
-            if message_sent {
-                if let Err(e) = send_stream.send_data(bytes::Bytes::new(), true) {
-                    // 如果是 inactive stream 错误，这是正常的，不需要记录为错误
-                    if e.to_string().contains("inactive stream") {
-                        println!("ℹ️ H2 流已关闭，结束信号发送被忽略");
-                    } else {
-                        eprintln!("❌ H2 发送结束信号失败: {}", e);
-                    }
-                } else {
-                    println!("✅ H2 发送流已正常关闭");
-                }
-            }
-        });
-        
-        // 创建接收流
-        let receive_stream = async_stream::stream! {
-            match response.await {
-                Ok(response) => {
-                    let mut body = response.into_body();
-                    let mut buffer = Vec::new();
-                    
-                    // 接收响应流
-                    while let Some(chunk_result) = body.data().await {
-                        match chunk_result {
-                            Ok(chunk) => {
-                                buffer.extend_from_slice(&chunk);
-                                
-                                // 尝试解析完整的 gRPC 消息
-                                while let Some((message_data, consumed)) = GrpcCodec::try_parse_frame(&buffer) {
-                                    // 尝试反序列化消息
-                                    match GrpcCodec::decode::<R>(&message_data) {
-                                        Ok(message) => {
-                                            yield Ok(message);
-                                        }
-                                        Err(e) => {
-                                            yield Err(RatError::DeserializationError(format!("反序列化失败: {}", e)));
-                                            break;
-                                        }
-                                    }
-                                    
-                                    // 移除已处理的数据
-                                    buffer.drain(0..consumed);
-                                }
-                            }
-                            Err(e) => {
-                                yield Err(RatError::NetworkError(format!("接收数据错误: {}", e)));
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    yield Err(RatError::NetworkError(format!("接收响应失败: {}", e)));
-                }
-            }
-        };
-
-        Ok((sender, Box::pin(receive_stream)))
-    }
 
     /// 获取下一个流 ID
     pub fn next_stream_id(&self) -> u64 {
@@ -2673,57 +2313,3 @@ impl RatGrpcClient {
     }
 }
 
-impl<S, R> GrpcBidirectionalStream<S, R> {
-    /// 将双向流分解为发送端和接收端
-    /// 
-    /// 这个方法会消费 `GrpcBidirectionalStream` 并返回其组成部分，
-    /// 允许用户独立使用发送端和接收端。
-    pub fn into_parts(mut self) -> (GrpcStreamSender<S>, GrpcStreamReceiver<R>) {
-        // 取出任务句柄，防止 Drop 时被 abort
-        let _send_task = self.send_task.take();
-        let _recv_task = self.recv_task.take();
-        
-        // 使用 ManuallyDrop 来避免 Drop 被调用
-        let mut manual_drop = std::mem::ManuallyDrop::new(self);
-        
-        // 安全地移动出字段
-        let sender = unsafe { std::ptr::read(&manual_drop.sender) };
-        let receiver = unsafe { std::ptr::read(&manual_drop.receiver) };
-        
-        (sender, receiver)
-    }
-
-    /// 关闭流
-    pub async fn close(&mut self) {
-        // 等待任务完成
-        if let Some(send_task) = self.send_task.take() {
-            let _ = send_task.await;
-        }
-        if let Some(recv_task) = self.recv_task.take() {
-            let _ = recv_task.await;
-        }
-
-        // 释放连接
-        self.connection_pool.release_connection(&self.connection_id);
-    }
-
-    /// 获取连接统计信息
-    pub fn get_connection_stats(&self) -> (usize, usize) {
-        self.connection_pool.get_stats()
-    }
-}
-
-impl<S, R> Drop for GrpcBidirectionalStream<S, R> {
-    fn drop(&mut self) {
-        // 确保连接被正确释放
-        self.connection_pool.release_connection(&self.connection_id);
-        
-        // 取消任务
-        if let Some(send_task) = self.send_task.take() {
-            send_task.abort();
-        }
-        if let Some(recv_task) = self.recv_task.take() {
-            recv_task.abort();
-        }
-    }
-}

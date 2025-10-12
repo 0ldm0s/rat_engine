@@ -44,8 +44,30 @@ make dev
 
 ### 生产环境安装
 
+#### Windows 环境编译 ⚠️
+
+在Windows环境下，需要在项目根目录先设置正确的环境变量：
+
 ```bash
-# 构建生产版本
+# 在 rat_engine 目录下设置环境变量（重要！）
+export CFLAGS="-O2 -fPIC"
+export CXXFLAGS="-O2 -fPIC"
+
+# 然后进入Python目录构建
+cd python
+make build
+```
+
+**Windows 环境注意事项**：
+- 推荐使用 MSYS2 + MinGW64 环境
+- 首次编译需要较长时间（25-30分钟），请耐心等待
+- 静态编译后的Python包无外部依赖，便于分发
+
+#### Linux/macOS 环境
+
+```bash
+# 标准构建
+cd python
 make build
 
 # 安装构建的 wheel 包
