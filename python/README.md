@@ -63,6 +63,119 @@ make build
 - 首次编译需要较长时间（25-30分钟），请耐心等待
 - 静态编译后的Python包无外部依赖，便于分发
 
+#### 🔧 Windows MSYS2 + MinGW64 环境搭建指南
+
+**第1步：安装 MSYS2**
+1. 访问 [MSYS2 官网](https://www.msys2.org/)
+2. 下载适合您系统的安装程序（64位推荐）
+3. 运行安装程序，选择安装路径（建议使用默认路径 `C:\msys64`）
+4. 完成安装后，启动 "MSYS2 MINGW64" 终端
+
+**第2步：更新软件包**
+在 MSYS2 MINGW64 终端中执行：
+```bash
+# 更新软件包数据库和基础包
+pacman -Syu
+
+# 如果提示重启终端，请关闭并重新打开终端，然后继续更新
+pacman -Su
+```
+
+**第3步：安装必要的编译工具**
+```bash
+# 安装 MinGW-w64 工具链
+pacman -S --needed base-devel mingw-w64-x86_64-toolchain
+
+# 安装 Git
+pacman -S git
+
+# 安装 OpenSSL 开发包（用于静态编译）
+pacman -S mingw-w64-x86_64-openssl
+
+# 安装 Python 开发工具
+pacman -S mingw-w64-x86_64-python
+pacman -S mingw-w64-x86_64-python-pip
+```
+
+**第4步：安装 Rust**
+```bash
+# 通过 rustup 安装 Rust（推荐）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 重新加载环境变量
+source ~/.cargo/env
+```
+
+**第5步：安装 Python 构建依赖**
+```bash
+# 升级 pip
+python -m pip install --upgrade pip
+
+# 安装构建Python扩展所需的工具
+pip install setuptools wheel maturin
+```
+
+**第6步：验证环境**
+```bash
+# 检查编译器
+gcc --version
+g++ --version
+
+# 检查 Rust
+rustc --version
+cargo --version
+
+# 检查 Python
+python --version
+pip --version
+
+# 检查构建工具
+maturin --version
+```
+
+**第7步：配置环境变量**
+在项目构建前设置编译标志：
+```bash
+# 设置兼容的编译标志（重要！）
+export CFLAGS="-O2 -fPIC"
+export CXXFLAGS="-O2 -fPIC"
+```
+
+**Python 构建特殊说明：**
+对于 Python 包构建，需要先在项目根目录设置环境变量：
+```bash
+# 在 rat_engine 目录下
+export CFLAGS="-O2 -fPIC"
+export CXXFLAGS="-O2 -fPIC"
+
+# 然后进入 Python 目录构建
+cd python
+make build
+```
+
+**故障排除：**
+- 如果遇到权限问题，请以管理员身份运行 MSYS2 终端
+- 如果 Python 模块导入失败，检查 PYTHONPATH 环境变量
+- 如果 maturin 构建失败，确保 Rust 和 Python 版本兼容
+- 如果网络连接有问题，可以尝试更换镜像源
+
+**常用命令：**
+```bash
+# 清理构建缓存
+make clean
+cargo clean
+
+# 查看安装的软件包
+pacman -Qs mingw-w64
+
+# 搜索可用软件包
+pacman -Ss 搜索关键词
+
+# 检查 Python 环境
+python -c "import sys; print(sys.version)"
+maturin list-python
+```
+
 #### Linux/macOS 环境
 
 ```bash
