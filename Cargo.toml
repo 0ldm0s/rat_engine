@@ -1,6 +1,6 @@
 [package]
 name = "rat_engine"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 authors = ["0ldm0s <oldmos@gmail.com>"]
 description = "高性能Rust HTTP服务器引擎，提供Flask风格的API和自动硬件优化功能"
