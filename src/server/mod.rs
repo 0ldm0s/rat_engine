@@ -113,7 +113,7 @@ pub use router::Router;
 pub use performance::{PerformanceManager, global_performance_manager, init_performance_optimization, set_thread_affinity, optimize_for_throughput};
 pub use worker_pool::WorkerPool;
 pub use hyper_adapter::HyperAdapter;
-pub use streaming::{SseManager, StreamingResponse, SseResponse, ChunkedResponse};
+pub use streaming::{StreamingResponse, SseResponse, ChunkedResponse};
 pub use sse_adapter::{SseAdapter, SseAdapterBuilder};
 pub use sse_connection_pool::{SseConnectionPool, SseConnectionPoolConfig, SseProtocolVersion, SseConnectionType};
 

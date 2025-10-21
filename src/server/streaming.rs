@@ -116,80 +116,10 @@ impl StreamingResponse {
     }
 }
 
-/// SSE 管理器
-/// 提供基于连接池的高级 SSE 功能
-pub struct SseManager {
-    adapter: Arc<SseAdapter>,
-}
 
-impl SseManager {
-    /// 创建新的 SSE 管理器
-    pub fn new() -> Self {
-        let adapter = SseAdapterBuilder::new()
-            .max_connections(10000)
-            .idle_timeout(Duration::from_secs(300))
-            .heartbeat_interval(Duration::from_secs(30))
-            .enable_heartbeat(true)
-            .enable_statistics(true)
-            .build();
-        
-        Self {
-            adapter: Arc::new(adapter),
-        }
-    }
-
-    /// 使用自定义配置创建 SSE 管理器
-    pub fn with_config(config: SseConnectionPoolConfig) -> Self {
-        let adapter = SseAdapter::new(config);
-        Self {
-            adapter: Arc::new(adapter),
-        }
-    }
-
-    /// 处理 SSE 连接请求
-    pub async fn handle_sse_request(
-        &self,
-        req: Request<Incoming>,
-        client_addr: String,
-    ) -> crate::error::RatResult<Response<StreamingBody>> {
-        self.adapter.handle_sse_request(req, client_addr).await
-    }
-
-    /// 广播消息到所有连接
-    pub async fn broadcast(&self, event: &str, data: &str) -> usize {
-        self.adapter.broadcast(event, data).await
-    }
-
-    /// 向特定用户发送消息
-    pub async fn send_to_user(&self, user_id: &str, event: &str, data: &str) -> usize {
-        self.adapter.send_to_user(user_id, event, data).await
-    }
-
-    /// 向特定房间发送消息
-    pub async fn send_to_room(&self, room_id: &str, event: &str, data: &str) -> usize {
-        self.adapter.send_to_room(room_id, event, data).await
-    }
-
-    /// 获取连接统计
-    pub fn get_statistics(&self) -> crate::server::sse_connection_pool::SseConnectionStatistics {
-        self.adapter.get_statistics()
-    }
-
-    /// 获取适配器引用（用于高级操作）
-    pub fn get_adapter(&self) -> Arc<SseAdapter> {
-        self.adapter.clone()
-    }
-}
-
-impl Default for SseManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Server-Sent Events (SSE) 流式响应（传统实现，保持向后兼容）
-/// 
-/// 注意：推荐使用 `SseManager` 进行新的开发，它提供了更好的连接管理和协议支持
+/// Server-Sent Events (SSE) 流式响应
+///
+/// 提供简单高效的 SSE 实现用于实时数据推送
 pub struct SseResponse {
     pub sender: mpsc::UnboundedSender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>,
     pub receiver: mpsc::UnboundedReceiver<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>,
