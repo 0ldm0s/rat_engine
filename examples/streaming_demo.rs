@@ -6,10 +6,11 @@
 //! - 自定义流式响应
 
 use rat_engine::server::{
-    Router, 
+    Router,
     streaming::{SseResponse, ChunkedResponse, StreamingResponse, utils},
     config::ServerConfig,
-    http_request::HttpRequest
+    http_request::HttpRequest,
+    global_sse_manager::{get_global_sse_manager, send_sse_message_with_type, broadcast_sse_message}
 };
 use rat_engine::RatEngine;
 use rat_engine::{Request, Method, StatusCode, Response};
@@ -22,6 +23,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use tokio::time::{sleep, Duration};
 use serde_json::json;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,39 +40,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建路由器
     let mut router = Router::new();
     
-    // 注册 SSE 路由
+    // 注册 SSE 路由 - 使用全局管理器
     router.add_streaming_route(
         Method::GET,
         "/sse",
-        |_req: HttpRequest, _params: HashMap<String, String>| {
+        |req: HttpRequest, _params: HashMap<String, String>| {
             Box::pin(async move {
-                let sse = SseResponse::new();
-                
+                // 生成唯一的连接ID（使用客户端IP作为标识）
+                let client_ip = req.client_ip().to_string();
+                let connection_id = format!("sse-{}-{}", client_ip, Uuid::new_v4().to_string()[..8].to_string());
+
+                // 获取全局管理器并创建连接
+                let manager = get_global_sse_manager();
+                let response = manager.register_connection(connection_id.clone())?;
+
                 // 发送初始连接事件
-                sse.send_event("connected", "Connection established").unwrap();
-                
-                // 启动后台任务发送定期更新
-                let sender = sse.get_sender();
+                send_sse_message_with_type(&connection_id, "connected", &json!({
+                    "connection_id": connection_id,
+                    "client_ip": client_ip,
+                    "message": "Connection established with global manager"
+                }).to_string()).unwrap();
+
+                // 启动后台任务演示全局管理器的功能
+                let connection_id_clone = connection_id.clone();
                 tokio::spawn(async move {
-                    for i in 1..=10 {
-                        sleep(Duration::from_secs(1)).await;
+                    // 模拟向特定连接发送消息
+                    for i in 1..=15 {
+                        sleep(Duration::from_secs(2)).await;
+
                         let data = json!({
                             "timestamp": chrono::Utc::now().to_rfc3339(),
                             "counter": i,
-                            "message": format!("Update #{}", i)
+                            "connection_id": connection_id_clone,
+                            "message": format!("Global manager message #{}", i)
                         });
-                        
-                        let formatted = format!("event: update\ndata: {}\n\n", data);
-                        if sender.send(Ok(Frame::data(Bytes::from(formatted)))).is_err() {
-                            break;
+
+                        // 使用全局管理器发送带类型的事件
+                        if let Err(e) = send_sse_message_with_type(&connection_id_clone, "update", &data.to_string()) {
+                            println!("❌ 发送消息失败，连接可能已断开: {}", e);
+                            break;  // 连接断开，退出后台任务
                         }
                     }
-                    
+
                     // 发送结束事件
-                    let _ = sender.send(Ok(Frame::data(Bytes::from("event: end\ndata: Stream completed\n\n"))));
+                    let _ = send_sse_message_with_type(&connection_id_clone, "end", "Stream completed via global manager");
                 });
-                
-                sse.build()
+
+                Ok(response)
             })
         }
     );

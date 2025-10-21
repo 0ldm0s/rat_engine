@@ -1,18 +1,22 @@
 //! 全局 SSE 管理器
 //!
-//! 基于无锁 DashMap 的高性能 SSE 连接管理
+//! 独立的 SSE 连接管理，不依赖 SseResponse 的存储逻辑
 
 use dashmap::DashMap;
 use std::sync::Arc;
-use crate::server::streaming::SseResponse;
+use hyper::{Response, StatusCode};
+use bytes::Bytes;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use crate::server::streaming::{StreamingResponse, StreamingBody};
 use crate::utils::logger::{info, debug, warn};
 
 /// 全局 SSE 管理器
 ///
-/// 提供无锁的 SSE 连接注册和消息发送功能
+/// 只存储 sender，避免 receiver 的所有权问题
 pub struct GlobalSseManager {
-    /// 连接映射表：connection_id -> SseResponse
-    connections: Arc<DashMap<String, SseResponse>>,
+    /// 连接映射表：connection_id -> Arc<sender>
+    connections: Arc<DashMap<String, Arc<mpsc::UnboundedSender<Result<hyper::body::Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>>>,
 }
 
 impl GlobalSseManager {
@@ -25,120 +29,93 @@ impl GlobalSseManager {
 
     /// 注册 SSE 连接
     ///
+    /// 在管理器内部创建通道，构建响应并存储 sender
+    ///
     /// # 参数
     /// * `connection_id` - 连接ID，由调用者自定义
-    /// * `sse_response` - SSE响应实例
-    pub fn register_connection(&self, connection_id: String, sse_response: SseResponse) {
-        self.connections.insert(connection_id.clone(), sse_response);
-        info!("🔗 [全局SSE管理器] 注册连接: {}", connection_id);
-    }
-
-    /// 发送消息到指定连接（带事件类型）
-    ///
-    /// # 参数
-    /// * `connection_id` - 连接ID
-    /// * `event_type` - 事件类型，允许为空
-    /// * `data` - 消息数据
     ///
     /// # 返回值
-    /// * `Ok(())` - 发送成功
-    /// * `Err(String)` - 发送失败（连接不存在或发送失败）
-    pub fn send_to_connection_with_type(
-        &self,
-        connection_id: &str,
-        event_type: &str,
-        data: &str,
-    ) -> Result<(), String> {
-        if let Some(sse) = self.connections.get(connection_id) {
-            let result = if event_type.is_empty() {
-                sse.send_data(data)
-            } else {
-                sse.send_event(event_type, data)
-            };
+    /// 构建好的 SSE 响应
+    pub fn register_connection(&self, connection_id: String) -> Result<Response<StreamingBody>, hyper::Error> {
+        // 创建通道
+        let (sender, receiver) = mpsc::unbounded_channel();
 
-            match &result {
-                Ok(()) => {
-                    debug!("📤 [全局SSE管理器] 发送消息到连接 {}: event='{}', data='{}'",
-                           connection_id, event_type, data);
-                }
-                Err(e) => {
-                    warn!("❌ [全局SSE管理器] 发送消息失败到连接 {}: {}", connection_id, e);
-                    // 如果发送失败，可能是连接已断开，移除连接
-                    self.remove_connection(connection_id);
-                }
-            }
+        // 存储sender
+        self.connections.insert(connection_id.clone(), Arc::new(sender));
 
-            result
-        } else {
-            warn!("🔍 [全局SSE管理器] 连接不存在: {}", connection_id);
-            Err("Connection not found".to_string())
-        }
+        // 构建响应流
+        let stream = UnboundedReceiverStream::new(receiver);
+
+        let response = StreamingResponse::new()
+            .status(StatusCode::OK)
+            .with_header("Content-Type", "text/event-stream")
+            .with_header("Cache-Control", "no-cache")
+            .with_header("Connection", "keep-alive")
+            .with_header("Access-Control-Allow-Origin", "*")
+            .stream(stream)
+            .build();
+
+        info!("🔗 [全局SSE管理器] 创建并注册连接: {}", connection_id);
+        response
     }
 
-    /// 发送消息到指定连接（简化接口，无事件类型）
+    /// 发送 SSE 事件
     ///
     /// # 参数
     /// * `connection_id` - 连接ID
-    /// * `data` - 消息数据
+    /// * `event` - 事件类型
+    /// * `data` - 事件数据
     ///
     /// # 返回值
     /// * `Ok(())` - 发送成功
     /// * `Err(String)` - 发送失败
-    pub fn send_to_connection(&self, connection_id: &str, data: &str) -> Result<(), String> {
-        self.send_to_connection_with_type(connection_id, "", data)
+    pub fn send_event(&self, connection_id: &str, event: &str, data: &str) -> Result<(), String> {
+        if let Some(sender) = self.connections.get(connection_id) {
+            let formatted = format!("event: {}\ndata: {}\n\n", event, data);
+            sender
+                .send(Ok(hyper::body::Frame::data(Bytes::from(formatted))))
+                .map_err(|e| format!("发送SSE事件失败: {:?}", e))
+        } else {
+            Err("连接不存在".to_string())
+        }
     }
 
-    /// 广播消息到所有连接
+    /// 发送简单数据
     ///
     /// # 参数
-    /// * `event_type` - 事件类型，允许为空
-    /// * `data` - 消息数据
+    /// * `connection_id` - 连接ID
+    /// * `data` - 数据
     ///
     /// # 返回值
-    /// 返回成功发送的连接数量
-    pub fn broadcast_with_type(&self, event_type: &str, data: &str) -> usize {
-        let mut success_count = 0;
-        let mut failed_connections = Vec::new();
-
-        for entry in self.connections.iter() {
-            let connection_id = entry.key();
-            let sse = entry.value();
-
-            let result = if event_type.is_empty() {
-                sse.send_data(data)
-            } else {
-                sse.send_event(event_type, data)
-            };
-
-            match result {
-                Ok(()) => {
-                    success_count += 1;
-                }
-                Err(_) => {
-                    failed_connections.push(connection_id.clone());
-                }
-            }
+    /// * `Ok(())` - 发送成功
+    /// * `Err(String)` - 发送失败
+    pub fn send_data(&self, connection_id: &str, data: &str) -> Result<(), String> {
+        if let Some(sender) = self.connections.get(connection_id) {
+            let formatted = format!("data: {}\n\n", data);
+            sender
+                .send(Ok(hyper::body::Frame::data(Bytes::from(formatted))))
+                .map_err(|e| format!("发送SSE数据失败: {:?}", e))
+        } else {
+            Err("连接不存在".to_string())
         }
-
-        // 移除失败的连接
-        for failed_id in failed_connections {
-            self.remove_connection(&failed_id);
-            warn!("❌ [全局SSE管理器] 移除失效连接: {}", failed_id);
-        }
-
-        info!("📡 [全局SSE管理器] 广播消息: event='{}', 成功连接数={}", event_type, success_count);
-        success_count
     }
 
-    /// 广播消息到所有连接（简化接口，无事件类型）
+    /// 发送心跳
     ///
     /// # 参数
-    /// * `data` - 消息数据
+    /// * `connection_id` - 连接ID
     ///
     /// # 返回值
-    /// 返回成功发送的连接数量
-    pub fn broadcast(&self, data: &str) -> usize {
-        self.broadcast_with_type("", data)
+    /// * `Ok(())` - 发送成功
+    /// * `Err(String)` - 发送失败
+    pub fn send_heartbeat(&self, connection_id: &str) -> Result<(), String> {
+        if let Some(sender) = self.connections.get(connection_id) {
+            sender
+                .send(Ok(hyper::body::Frame::data(Bytes::from(": heartbeat\n\n"))))
+                .map_err(|e| format!("发送心跳失败: {:?}", e))
+        } else {
+            Err("连接不存在".to_string())
+        }
     }
 
     /// 主动断开 SSE 连接
@@ -152,13 +129,13 @@ impl GlobalSseManager {
     /// * `true` - 连接存在并已断开
     /// * `false` - 连接不存在
     pub fn disconnect_connection(&self, connection_id: &str) -> bool {
-        if let Some((_, sse)) = self.connections.remove(connection_id) {
+        if let Some((_, sender)) = self.connections.remove(connection_id) {
             // 发送断开事件（不管成功失败）
-            let _ = sse.send_event("disconnect", "Server is disconnecting connection");
-            let _ = sse.send_data("DISCONNECT_EVENT");
+            let _ = sender.send(Ok(hyper::body::Frame::data(Bytes::from("event: disconnect\ndata: 服务器断开连接\n\n"))));
+            let _ = sender.send(Ok(hyper::body::Frame::data(Bytes::from("DISCONNECT_EVENT"))));
 
             // 关闭发送器
-            drop(sse);
+            drop(sender);
 
             info!("🔌 [全局SSE管理器] 主动断开连接: {}", connection_id);
             true
@@ -184,6 +161,48 @@ impl GlobalSseManager {
             info!("🗑️ [全局SSE管理器] 移除连接: {}", connection_id);
         }
         removed
+    }
+
+    /// 广播消息到所有连接
+    ///
+    /// # 参数
+    /// * `event` - 事件类型，允许为空
+    /// * `data` - 消息数据
+    ///
+    /// # 返回值
+    /// 返回成功发送的连接数量
+    pub fn broadcast(&self, event: &str, data: &str) -> usize {
+        let mut success_count = 0;
+        let mut failed_connections = Vec::new();
+
+        for entry in self.connections.iter() {
+            let connection_id = entry.key();
+            let sender = entry.value();
+
+            let result = if event.is_empty() {
+                self.send_data(connection_id, data)
+            } else {
+                self.send_event(connection_id, event, data)
+            };
+
+            match result {
+                Ok(()) => {
+                    success_count += 1;
+                }
+                Err(_) => {
+                    failed_connections.push(connection_id.to_string());
+                }
+            }
+        }
+
+        // 移除失败的连接
+        for failed_id in failed_connections {
+            self.remove_connection(&failed_id);
+            warn!("❌ [全局SSE管理器] 移除失效连接: {}", failed_id);
+        }
+
+        info!("📡 [全局SSE管理器] 广播消息: event='{}', 成功连接数={}", event, success_count);
+        success_count
     }
 
     /// 获取连接统计
@@ -239,31 +258,31 @@ pub fn get_global_sse_manager() -> Arc<GlobalSseManager> {
 /// 便捷函数：向特定连接发送消息（无事件类型）
 pub fn send_sse_message(connection_id: &str, data: &str) -> Result<(), String> {
     let manager = get_global_sse_manager();
-    manager.send_to_connection(connection_id, data)
+    manager.send_data(connection_id, data)
 }
 
 /// 便捷函数：向特定连接发送消息（带事件类型）
 pub fn send_sse_message_with_type(connection_id: &str, event_type: &str, data: &str) -> Result<(), String> {
     let manager = get_global_sse_manager();
-    manager.send_to_connection_with_type(connection_id, event_type, data)
+    manager.send_event(connection_id, event_type, data)
 }
 
 /// 便捷函数：广播 SSE 消息（无事件类型）
 pub fn broadcast_sse_message(data: &str) -> usize {
     let manager = get_global_sse_manager();
-    manager.broadcast(data)
+    manager.broadcast("", data)
 }
 
 /// 便捷函数：广播 SSE 消息（带事件类型）
 pub fn broadcast_sse_message_with_type(event_type: &str, data: &str) -> usize {
     let manager = get_global_sse_manager();
-    manager.broadcast_with_type(event_type, data)
+    manager.broadcast(event_type, data)
 }
 
 /// 便捷函数：注册 SSE 连接
-pub fn register_sse_connection(connection_id: String, sse_response: SseResponse) {
+pub fn register_sse_connection(connection_id: String) -> Result<Response<StreamingBody>, hyper::Error> {
     let manager = get_global_sse_manager();
-    manager.register_connection(connection_id, sse_response);
+    manager.register_connection(connection_id)
 }
 
 /// 便捷函数：主动断开 SSE 连接
