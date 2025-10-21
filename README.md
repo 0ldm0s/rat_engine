@@ -222,6 +222,7 @@ let price = req.param_as_f64("price").unwrap_or(0.0);
 - `examples/dynamic_routes_demo.rs` - 基础路径参数示例
 - `examples/advanced_path_params_demo.rs` - 高级参数类型演示
 - `examples/streaming_demo.rs` - 流式响应和全局SSE管理器演示
+- `examples/streaming_response_test.rs` - **流式响应功能测试**，验证HTTP状态码、JSON响应、SSE参数验证
 - `examples/sse_chat/` - **完整的多房间SSE聊天室示例**，展示实时通信应用
 
 ### 运行示例
@@ -234,6 +235,9 @@ cargo run --example builder_pattern_example
 
 # 运行流式处理示例
 cargo run --example streaming_demo
+
+# 运行流式响应测试示例（验证HTTP状态码和SSE参数验证）
+cargo run --example streaming_response_test
 
 # 运行 SSE 聊天室示例
 cargo run --example sse_chat
@@ -338,6 +342,7 @@ src/
 examples/              # 示例文件
 ├── builder_pattern_example.rs # 构建器模式示例
 ├── streaming_demo.rs   # 流式处理示例
+├── streaming_response_test.rs # 流式响应功能测试示例
 ├── sse_chat/           # SSE 聊天室示例
 │   ├── main.rs         # 服务器实现
 │   ├── login.html      # 登录页面
