@@ -244,8 +244,9 @@ impl HttpRequest {
     /// 3. X-Forwarded-For
     /// 4. X-Real-IP
     /// 5. 回退到 remote_addr
-    pub fn client_ip(&self) -> Option<std::net::IpAddr> {
+    pub fn client_ip(&self) -> std::net::IpAddr {
         self.client_ip_with_validation(true)
+            .unwrap_or_else(|| "255.255.255.255".parse().expect("Invalid fallback IP"))
     }
 
     /// 获取客户端真实 IP 地址（可选择是否验证公网 IP）

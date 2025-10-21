@@ -104,6 +104,7 @@ pub mod grpc_handler;
 pub mod grpc_queue_bridge_adapter;
 pub mod grpc_delegated_handler;
 pub mod http_request;
+pub mod global_sse_manager;
 
 pub use config::ServerConfig;
 pub use port_config::{PortConfig, PortConfigBuilder, PortMode, PortConfigError, HttpsConfig, CertificateConfig};
