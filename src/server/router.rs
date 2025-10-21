@@ -909,12 +909,11 @@ impl Router {
         crate::utils::logger::debug!("🔍 [Router] 处理 HTTP 请求: {} {}", method, path);
 
         // IP 黑名单检查
-        if let Some(client_ip) = req.client_ip() {
-            if let Ok(blacklist) = self.blacklist.read() {
-                if blacklist.contains(&client_ip) {
-                    crate::utils::logger::warn!("🚫 [Router] IP {} 在黑名单中", client_ip);
-                    return Ok(self.create_error_response(StatusCode::FORBIDDEN, "Access denied"));
-                }
+        let client_ip = req.client_ip();
+        if let Ok(blacklist) = self.blacklist.read() {
+            if blacklist.contains(&client_ip) {
+                crate::utils::logger::warn!("🚫 [Router] IP {} 在黑名单中", client_ip);
+                return Ok(self.create_error_response(StatusCode::FORBIDDEN, "Access denied"));
             }
         }
 
