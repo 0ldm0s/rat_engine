@@ -104,8 +104,6 @@ pub mod grpc_handler;
 pub mod grpc_queue_bridge_adapter;
 pub mod grpc_delegated_handler;
 pub mod http_request;
-pub mod sse_connection_pool;
-pub mod sse_adapter;
 
 pub use config::ServerConfig;
 pub use port_config::{PortConfig, PortConfigBuilder, PortMode, PortConfigError, HttpsConfig, CertificateConfig};
@@ -114,8 +112,6 @@ pub use performance::{PerformanceManager, global_performance_manager, init_perfo
 pub use worker_pool::WorkerPool;
 pub use hyper_adapter::HyperAdapter;
 pub use streaming::{StreamingResponse, SseResponse, ChunkedResponse};
-pub use sse_adapter::{SseAdapter, SseAdapterBuilder};
-pub use sse_connection_pool::{SseConnectionPool, SseConnectionPoolConfig, SseProtocolVersion, SseConnectionType};
 
 
 /// 使用自定义路由器启动服务器（已弃用 - 请使用 RatEngineBuilder）

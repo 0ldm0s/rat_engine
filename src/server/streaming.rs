@@ -18,8 +18,6 @@ use futures_util::stream;
 use tokio::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
-use crate::server::sse_adapter::{SseAdapter, SseAdapterBuilder};
-use crate::server::sse_connection_pool::SseConnectionPoolConfig;
 use crate::utils::logger::{trace, error};
 
 /// 流式响应体类型
