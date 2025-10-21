@@ -29,6 +29,7 @@
 - 🚀 **高性能**: 基于 Tokio 和 Hyper 的异步架构
 - 🔧 **硬件自适应**: 自动检测 CPU 核心数并优化线程配置
 - 🛣️ **灵活路由**: 支持 HTTP 方法和路径的精确匹配，**自动路径参数提取**
+- 📡 **SSE 支持**: 全局 Server-Sent Events 管理器，支持实时通信和连接管理
 - 📊 **内置监控**: 请求日志、性能指标、健康检查
 - ⚡ **工作窃取**: 高效的任务调度和负载均衡算法
 - 🧠 **内存池**: 智能内存管理，减少分配开销
@@ -220,6 +221,8 @@ let price = req.param_as_f64("price").unwrap_or(0.0);
 📖 **完整示例请查看**:
 - `examples/dynamic_routes_demo.rs` - 基础路径参数示例
 - `examples/advanced_path_params_demo.rs` - 高级参数类型演示
+- `examples/streaming_demo.rs` - 流式响应和全局SSE管理器演示
+- `examples/sse_chat/` - **完整的多房间SSE聊天室示例**，展示实时通信应用
 
 ### 运行示例
 
@@ -231,6 +234,9 @@ cargo run --example builder_pattern_example
 
 # 运行流式处理示例
 cargo run --example streaming_demo
+
+# 运行 SSE 聊天室示例
+cargo run --example sse_chat
 
 # 运行 gRPC 综合示例
 cargo run --example grpc_comprehensive_example
@@ -332,6 +338,10 @@ src/
 examples/              # 示例文件
 ├── builder_pattern_example.rs # 构建器模式示例
 ├── streaming_demo.rs   # 流式处理示例
+├── sse_chat/           # SSE 聊天室示例
+│   ├── main.rs         # 服务器实现
+│   ├── login.html      # 登录页面
+│   └── chat.html       # 聊天室界面
 ├── grpc_comprehensive_example.rs # gRPC 综合示例
 ├── cache_compression_performance_test.rs # 缓存性能测试
 ├── grpc_client_bidirectional_example.rs # gRPC 客户端示例
