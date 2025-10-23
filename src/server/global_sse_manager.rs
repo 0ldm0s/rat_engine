@@ -121,6 +121,8 @@ impl GlobalSseManager {
     /// 主动断开 SSE 连接
     ///
     /// 发送断开事件后移除连接，不管发送成功或失败都会移除
+    /// ⚠️ **重要：这是在SSE发送失败时应该调用的完整方法！**
+    /// 包含发送断开事件、关闭发送器等完整清理流程
     ///
     /// # 参数
     /// * `connection_id` - 连接ID
@@ -147,7 +149,9 @@ impl GlobalSseManager {
 
     /// 移除连接（内部方法）
     ///
+    /// ⚠️ **注意：这只是移除映射关系，不包含完整清理流程！**
     /// 仅用于内部清理，外部请使用 disconnect_connection
+    /// 发送失败时应该使用 disconnect_connection 而不是这个方法！
     ///
     /// # 参数
     /// * `connection_id` - 连接ID
