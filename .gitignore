@@ -69,3 +69,14 @@ LOCK
 *.session
 *.conversation
 *.continued
+
+# 文档文件管理
+# 根目录只允许README*.md文件，其他md文件忽略
+/*.md
+!/README*.md
+
+# 所有txt文件都应该被忽略
+*.txt
+
+# docs目录下的md文件允许
+docs/*.md
