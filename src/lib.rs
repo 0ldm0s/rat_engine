@@ -19,6 +19,7 @@ pub mod server;
 pub mod client;
 pub mod utils;
 pub mod error;
+#[cfg(feature = "compression")]
 pub mod compression;
 pub mod cache;
 
