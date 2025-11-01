@@ -490,17 +490,17 @@ impl ClientManager {
 
             // 读取客户端证书和私钥
             let cert_pem = fs::read_to_string(cert_path)
-                .map_err(|e| RatError::ConfigError(format!("无法读取客户端证书文件 {}: {}", cert_path, e)))?;
+                .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("unable_to_read_client_cert_file", &[("path", cert_path), ("msg", &e.to_string())])))?;
             let key_pem = fs::read_to_string(key_path)
-                .map_err(|e| RatError::ConfigError(format!("无法读取客户端私钥文件 {}: {}", key_path, e)))?;
+                .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("unable_to_read_client_key_file", &[("path", key_path), ("msg", &e.to_string())])))?;
 
             // 解析客户端证书
             let cert = X509::from_pem(cert_pem.as_bytes())
-                .map_err(|e| RatError::ConfigError(format!("解析客户端证书失败: {}", e)))?;
+                .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("parse_client_cert_failed_config", &[("msg", &e.to_string())])))?;
 
             // 解析客户端私钥
             let private_key = PKey::private_key_from_pem(key_pem.as_bytes())
-                .map_err(|e| RatError::ConfigError(format!("解析客户端私钥失败: {}", e)))?;
+                .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("parse_client_key_failed_config", &[("msg", &e.to_string())])))?;
 
             // 如果配置了跳过服务器验证，使用自签名 mTLS 配置
             if config.mtls_skip_server_verification {
@@ -515,10 +515,10 @@ impl ClientManager {
                 // 解析 CA 证书（如果提供）
                 let ca_certs = if let Some(ca_path) = &config.mtls_ca_cert_path {
                     let ca_pem = fs::read_to_string(ca_path)
-                        .map_err(|e| RatError::ConfigError(format!("无法读取 CA 证书文件 {}: {}", ca_path, e)))?;
+                        .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("unable_to_read_ca_cert_file", &[("path", ca_path), ("msg", &e.to_string())])))?;
 
                     let ca_cert = X509::from_pem(ca_pem.as_bytes())
-                        .map_err(|e| RatError::ConfigError(format!("解析 CA 证书失败: {}", e)))?;
+                        .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("parse_ca_cert_failed", &[("msg", &e.to_string())])))?;
 
                     Some(vec![ca_cert])
                 } else {
@@ -575,17 +575,17 @@ impl ClientManager {
 
                 // 读取客户端证书和私钥
                 let cert_pem = fs::read_to_string(cert_path)
-                    .map_err(|e| RatError::ConfigError(format!("无法读取客户端证书文件 {}: {}", cert_path, e)))?;
+                    .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("unable_to_read_client_cert_file", &[("path", cert_path), ("msg", &e.to_string())])))?;
                 let key_pem = fs::read_to_string(key_path)
-                    .map_err(|e| RatError::ConfigError(format!("无法读取客户端私钥文件 {}: {}", key_path, e)))?;
+                    .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("unable_to_read_client_key_file", &[("path", key_path), ("msg", &e.to_string())])))?;
 
                 // 解析客户端证书
                 let cert = X509::from_pem(cert_pem.as_bytes())
-                    .map_err(|e| RatError::ConfigError(format!("解析客户端证书失败: {}", e)))?;
+                    .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("parse_client_cert_failed_config", &[("msg", &e.to_string())])))?;
 
                 // 解析客户端私钥
                 let private_key = PKey::private_key_from_pem(key_pem.as_bytes())
-                    .map_err(|e| RatError::ConfigError(format!("解析客户端私钥失败: {}", e)))?;
+                    .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("parse_client_key_failed_config", &[("msg", &e.to_string())])))?;
 
                 // 如果配置了跳过服务器验证，使用自签名 mTLS 配置
                 if config.mtls_skip_server_verification {
@@ -600,10 +600,10 @@ impl ClientManager {
                     // 使用标准 mTLS 配置
                     let ca_certs = if let Some(ca_path) = &config.mtls_ca_cert_path {
                         let ca_pem = fs::read_to_string(ca_path)
-                            .map_err(|e| RatError::ConfigError(format!("无法读取 CA 证书文件 {}: {}", ca_path, e)))?;
+                            .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("unable_to_read_ca_cert_file", &[("path", ca_path), ("msg", &e.to_string())])))?;
 
                         let ca_cert = X509::from_pem(ca_pem.as_bytes())
-                            .map_err(|e| RatError::ConfigError(format!("解析 CA 证书失败: {}", e)))?;
+                            .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("parse_ca_cert_failed", &[("msg", &e.to_string())])))?;
 
                         Some(vec![ca_cert])
                     } else {

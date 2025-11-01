@@ -60,29 +60,95 @@ pub type RatEngineError = RatError;
 impl fmt::Display for RatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RatError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
-            RatError::NetworkError(msg) => write!(f, "Network error: {}", msg),
-            RatError::CacheError(msg) => write!(f, "Cache error: {}", msg),
-            RatError::RequestError(msg) => write!(f, "Request error: {}", msg),
-            RatError::TimeoutError(msg) => write!(f, "Timeout error: {}", msg),
-            RatError::DecodingError(msg) => write!(f, "Decoding error: {}", msg),
-            RatError::RouteError(msg) => write!(f, "Route error: {}", msg),
-            RatError::WorkerPoolError(msg) => write!(f, "Worker pool error: {}", msg),
-            RatError::SystemInfoError(msg) => write!(f, "System info error: {}", msg),
-            RatError::IoError(err) => write!(f, "IO error: {}", err),
-            RatError::HyperError(err) => write!(f, "HTTP error: {}", err),
-            RatError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            RatError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
-            RatError::SecurityError(msg) => write!(f, "Security error: {}", msg),
-            RatError::TlsError(msg) => write!(f, "TLS error: {}", msg),
-            RatError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
-            RatError::DeserializationError(msg) => write!(f, "Deserialization error: {}", msg),
-            RatError::PythonError(msg) => write!(f, "Python error: {}", msg),
-            RatError::TransferError(msg) => write!(f, "Transfer error: {}", msg),
-            RatError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
+            RatError::ConfigError(msg) => {
+                let localized = rat_embed_lang::tf("config_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::NetworkError(msg) => {
+                let localized = rat_embed_lang::tf("network_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::CacheError(msg) => {
+                let localized = rat_embed_lang::tf("cache_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::RequestError(msg) => {
+                let localized = rat_embed_lang::tf("request_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::TimeoutError(msg) => {
+                let localized = rat_embed_lang::tf("timeout_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::DecodingError(msg) => {
+                let localized = rat_embed_lang::tf("decoding_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::RouteError(msg) => {
+                let localized = rat_embed_lang::tf("route_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::WorkerPoolError(msg) => {
+                let localized = rat_embed_lang::tf("worker_pool_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::SystemInfoError(msg) => {
+                let localized = rat_embed_lang::tf("system_info_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::IoError(err) => {
+                let localized = rat_embed_lang::tf("io_error", &[("msg", &err.to_string())]);
+                write!(f, "{}", localized)
+            },
+            RatError::HyperError(err) => {
+                let localized = rat_embed_lang::tf("hyper_error", &[("msg", &err.to_string())]);
+                write!(f, "{}", localized)
+            },
+            RatError::ParseError(msg) => {
+                let localized = rat_embed_lang::tf("parse_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::ValidationError(msg) => {
+                let localized = rat_embed_lang::tf("validation_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::SecurityError(msg) => {
+                let localized = rat_embed_lang::tf("security_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::TlsError(msg) => {
+                let localized = rat_embed_lang::tf("tls_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::SerializationError(msg) => {
+                let localized = rat_embed_lang::tf("serialization_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::DeserializationError(msg) => {
+                let localized = rat_embed_lang::tf("deserialization_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::PythonError(msg) => {
+                let localized = rat_embed_lang::tf("python_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::TransferError(msg) => {
+                let localized = rat_embed_lang::tf("transfer_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
+            RatError::InvalidArgument(msg) => {
+                let localized = rat_embed_lang::tf("invalid_argument", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
             #[cfg(feature = "reqwest")]
-            RatError::ReqwestError(err) => write!(f, "HTTP client error: {}", err),
-            RatError::Other(msg) => write!(f, "Error: {}", msg),
+            RatError::ReqwestError(err) => {
+                let localized = rat_embed_lang::tf("reqwest_error", &[("msg", &err.to_string())]);
+                write!(f, "{}", localized)
+            },
+            RatError::Other(msg) => {
+                let localized = rat_embed_lang::tf("other_error", &[("msg", msg)]);
+                write!(f, "{}", localized)
+            },
         }
     }
 }

@@ -87,11 +87,11 @@ impl RatGrpcClient {
         
         // 解析 URI
         let parsed_uri = uri.parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
         
         // 1. 从连接池获取连接
         let connection = self.connection_pool.get_connection(&parsed_uri).await
-            .map_err(|e| RatError::NetworkError(format!("获取连接失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("get_connection_failed", &[("msg", &e.to_string())])))?;
         let mut send_request = connection.send_request.clone();
 
         // 构建请求路径
@@ -104,15 +104,15 @@ impl RatGrpcClient {
             .header(CONTENT_TYPE, "application/grpc")
             .header(USER_AGENT, &self.user_agent)
             .body(())
-            .map_err(|e| RatError::RequestError(format!("构建双向流请求失败: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_bidirectional_stream_request_failed", &[("msg", &e.to_string())])))?;
 
         // 发送请求并获取响应流
         let (response, send_stream) = send_request.send_request(request, false)
-            .map_err(|e| RatError::NetworkError(format!("发送双向流请求失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("send_bidirectional_stream_request_failed", &[("msg", &e.to_string())])))?;
 
         // 等待响应头
         let response = response.await
-            .map_err(|e| RatError::NetworkError(format!("接收双向流响应失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("receive_bidirectional_stream_response_failed", &[("msg", &e.to_string())])))?;
 
         let receive_stream = response.into_body();
 
@@ -251,14 +251,14 @@ impl RatGrpcClient {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    let error_msg = format!("❌ [委托模式] 反序列化实际消息失败: {}", e);
+                                                    let error_msg = rat_embed_lang::tf("delegate_deserialize_actual_message_failed", &[("msg", &e.to_string())]);
                                                     error!("{}", error_msg);
                                                     handler_clone.on_error(&context_clone, error_msg).await;
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            let error_msg = format!("❌ [委托模式] GrpcStreamMessage 反序列化失败: {}", e);
+                                            let error_msg = rat_embed_lang::tf("delegate_grpc_stream_message_deserialize_failed", &[("msg", &e.to_string())]);
                                             error!("{}", error_msg);
                                             handler_clone.on_error(&context_clone, error_msg).await;
                                         }
@@ -275,7 +275,7 @@ impl RatGrpcClient {
                          }
                      }
                      Err(e) => {
-                            let error_msg = format!("接收数据失败: {}", e);
+                            let error_msg = rat_embed_lang::tf("receive_data_failed", &[("msg", &e.to_string())]);
                             error!("{}", error_msg);
                             handler_clone.on_error(&context_clone, error_msg).await;
                             break;

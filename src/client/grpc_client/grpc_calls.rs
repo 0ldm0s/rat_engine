@@ -133,7 +133,7 @@ impl RatGrpcClient {
 
         // 使用统一的编解码器编码并创建帧
         let grpc_message = GrpcCodec::encode_frame(&grpc_request)
-            .map_err(|e| RatError::SerializationError(format!("编码 gRPC 请求失败: {}", e)))?;
+            .map_err(|e| RatError::SerializationError(rat_embed_lang::tf("encode_grpc_request_failed", &[("msg", &e.to_string())])))?;
 
         // 一元请求直接使用 gRPC 消息格式，不进行额外的 HTTP 压缩
         let compressed_data = Bytes::from(grpc_message);
@@ -148,12 +148,12 @@ impl RatGrpcClient {
         
         let uri = full_uri
             .parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(format!("无效的用户代理: {}", e)))?);
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?;
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
         
         if let Some(encoding) = content_encoding {
@@ -164,7 +164,7 @@ impl RatGrpcClient {
             .method(Method::POST)
             .uri(uri)
             .body(Full::new(compressed_data))
-            .map_err(|e| RatError::RequestError(format!("构建请求失败: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_request_failed", &[("msg", &e.to_string())])))?;
 
         // 添加头部
         let (mut parts, body) = request.into_parts();
@@ -210,7 +210,7 @@ impl RatGrpcClient {
         // 先序列化强类型数据为 Vec<u8>，然后包装到 GrpcRequest 中
         // 这样服务端就能接收到 GrpcRequest<Vec<u8>> 格式的数据
         let serialized_data = GrpcCodec::encode(&request_data)
-            .map_err(|e| RatError::SerializationError(format!("序列化请求数据失败: {}", e)))?;
+            .map_err(|e| RatError::SerializationError(rat_embed_lang::tf("serialize_request_failed", &[("msg", &e.to_string())])))?;
         
         let grpc_request = GrpcRequest {
             id: request_id,
@@ -221,7 +221,7 @@ impl RatGrpcClient {
 
         // 使用统一的编解码器编码并创建帧
         let grpc_message = GrpcCodec::encode_frame(&grpc_request)
-            .map_err(|e| RatError::SerializationError(format!("编码 gRPC 请求失败: {}", e)))?;
+            .map_err(|e| RatError::SerializationError(rat_embed_lang::tf("encode_grpc_request_failed", &[("msg", &e.to_string())])))?;
 
         // 一元请求直接使用 gRPC 消息格式，不进行额外的 HTTP 压缩
         let compressed_data = Bytes::from(grpc_message);
@@ -234,12 +234,12 @@ impl RatGrpcClient {
         
         let uri = full_uri
             .parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(format!("无效的用户代理: {}", e)))?);
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?;
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
         
         if let Some(encoding) = content_encoding {
@@ -250,7 +250,7 @@ impl RatGrpcClient {
             .method(Method::POST)
             .uri(uri)
             .body(Full::new(compressed_data))
-            .map_err(|e| RatError::RequestError(format!("构建请求失败: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_request_failed", &[("msg", &e.to_string())])))?;
 
         // 添加头部
         let (mut parts, body) = request.into_parts();

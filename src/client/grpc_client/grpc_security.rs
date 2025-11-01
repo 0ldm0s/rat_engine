@@ -22,7 +22,7 @@ impl RatGrpcClient {
 
             // 创建 OpenSSL SSL 连接器
             let mut ssl_connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
 
   
             // 配置 CA 证书
@@ -30,16 +30,16 @@ impl RatGrpcClient {
                 // 使用自定义 CA 证书
                 for ca_cert_der in ca_certs {
                     let ca_cert = X509::from_der(ca_cert_der)
-                        .map_err(|e| RatError::TlsError(format!("解析 CA 证书失败: {}", e)))?;
+                        .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_ca_cert_failed", &[("msg", &e.to_string())])))?;
                     ssl_connector.cert_store_mut()
                         .add_cert(ca_cert)
-                        .map_err(|e| RatError::TlsError(format!("添加 CA 证书到存储失败: {}", e)))?;
+                        .map_err(|e| RatError::TlsError(rat_embed_lang::tf("add_ca_cert_to_store_failed", &[("msg", &e.to_string())])))?;
                 }
                 info!("✅ 已加载 {} 个自定义 CA 证书", ca_certs.len());
             } else {
                 // 使用系统默认根证书
                 ssl_connector.set_default_verify_paths()
-                    .map_err(|e| RatError::TlsError(format!("设置默认证书路径失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_default_cert_path_failed", &[("msg", &e.to_string())])))?;
                 info!("✅ 已加载系统默认根证书");
             }
 
@@ -50,18 +50,18 @@ impl RatGrpcClient {
             // 使用第一个证书作为客户端证书
             if let Some(client_cert_der) = client_cert_chain.first() {
                 let client_cert = X509::from_der(client_cert_der)
-                    .map_err(|e| RatError::TlsError(format!("解析客户端证书失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_client_cert_failed", &[("msg", &e.to_string())])))?;
 
                 // 从私钥中提取私钥
                 let private_key = PKey::private_key_from_der(&client_private_key)
-                    .map_err(|e| RatError::TlsError(format!("解析私钥失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_private_key_failed", &[("msg", &e.to_string())])))?;
 
                 ssl_connector.set_certificate(&client_cert)
-                    .map_err(|e| RatError::TlsError(format!("设置客户端证书失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_client_cert_failed", &[("msg", &e.to_string())])))?;
                 ssl_connector.set_private_key(&private_key)
-                    .map_err(|e| RatError::TlsError(format!("设置私钥失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_private_key_failed", &[("msg", &e.to_string())])))?;
                 ssl_connector.check_private_key()
-                    .map_err(|e| RatError::TlsError(format!("私钥证书匹配检查失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("key_cert_match_check_failed", &[("msg", &e.to_string())])))?;
 
                 info!("✅ 客户端证书配置完成");
             } else {
@@ -88,7 +88,7 @@ impl RatGrpcClient {
             warn!("⚠️  警告：gRPC 客户端已启用开发模式，将跳过所有 TLS 证书验证！仅用于开发环境！");
 
             let mut ssl_connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
 
             // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
             ssl_connector.set_alpn_protos(b"\x02h2")?;
@@ -104,12 +104,12 @@ impl RatGrpcClient {
         } else {
             // 非开发模式：严格证书验证
             let mut ssl_connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
 
   
             // 设置系统默认证书路径
             ssl_connector.set_default_verify_paths()
-                .map_err(|e| RatError::TlsError(format!("设置默认证书路径失败: {}", e)))?;
+                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_default_cert_path_failed", &[("msg", &e.to_string())])))?;
 
             // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
             ssl_connector.set_alpn_protos(b"\x02h2")?;

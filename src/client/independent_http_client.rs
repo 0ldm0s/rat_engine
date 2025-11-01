@@ -165,7 +165,7 @@ impl RatIndependentHttpClient {
         let response = request_builder
             .send()
             .await
-            .map_err(|e| RatError::NetworkError(format!("请求失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("request_failed", &[("msg", &e.to_string())])))?;
 
         let elapsed = start_time.elapsed();
         let status = response.status();
@@ -183,11 +183,11 @@ impl RatIndependentHttpClient {
         let body_bytes = if self.auto_decompress {
             // reqwest自动解压缩，获取解压后的数据
             response.bytes().await
-                .map_err(|e| RatError::NetworkError(format!("读取响应体失败: {}", e)))?
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_body_failed", &[("msg", &e.to_string())])))
         } else {
             // 获取原始压缩数据
             response.bytes().await
-                .map_err(|e| RatError::NetworkError(format!("读取响应体失败: {}", e)))?
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_body_failed", &[("msg", &e.to_string())])))
         };
 
         let original_size = body_bytes.len();
@@ -251,10 +251,10 @@ impl RatIndependentHttpClient {
         let response = request_builder
             .send()
             .await
-            .map_err(|e| RatError::NetworkError(format!("SSE连接失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("sse_connection_failed", &[("msg", &e.to_string())])))?;
 
         if !response.status().is_success() {
-            return Err(RatError::NetworkError(format!("SSE连接失败: {}", response.status())));
+            return Err(RatError::NetworkError(rat_embed_lang::tf("sse_connection_failed", &[("msg", &response.status().to_string())])));
         }
 
         // 检查Content-Type
@@ -410,7 +410,7 @@ impl SseStream {
 
         while let Some(chunk_result) = self.byte_stream.next().await {
             let chunk = chunk_result
-                .map_err(|e| RatError::NetworkError(format!("读取SSE流失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_sse_stream_failed", &[("msg", &e.to_string())])))?;
 
             self.buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -568,8 +568,8 @@ impl RatIndependentHttpClientBuilder {
         V: TryInto<HeaderValue>,
         V::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let header_name = key.try_into().map_err(|e| RatError::RequestError(format!("无效的请求头名: {}", e.into())))?;
-        let header_value = value.try_into().map_err(|e| RatError::RequestError(format!("无效的请求头值: {}", e.into())))?;
+        let header_name = key.try_into().map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_header_name", &[("msg", &e.into())])))?;
+        let header_value = value.try_into().map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_header_value", &[("msg", &e.into())])))?;
         self.default_headers.insert(header_name, header_value);
         Ok(self)
     }
@@ -599,7 +599,7 @@ impl RatIndependentHttpClientBuilder {
 
         let client = client_builder
             .build()
-            .map_err(|e| RatError::RequestError(format!("构建HTTP客户端失败: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_http_client_failed", &[("msg", &e.to_string())])))?;
 
         Ok(RatIndependentHttpClient {
             client,
@@ -627,7 +627,7 @@ impl RatIndependentHttpResponse {
     /// 获取响应文本
     pub fn text(&self) -> RatResult<String> {
         String::from_utf8(self.body.to_vec())
-            .map_err(|e| RatError::DecodingError(format!("响应体不是有效的UTF-8: {}", e)))
+            .map_err(|e| RatError::DecodingError(rat_embed_lang::tf("response_body_not_utf8", &[("msg", &e.to_string())])))
     }
 
     /// 解析JSON响应
@@ -636,7 +636,7 @@ impl RatIndependentHttpResponse {
         T: for<'de> Deserialize<'de>,
     {
         serde_json::from_slice(&self.body)
-            .map_err(|e| RatError::DeserializationError(format!("JSON解析失败: {}", e)))
+            .map_err(|e| RatError::DeserializationError(rat_embed_lang::tf("json_parse_failed", &[("msg", &e.to_string())])))
     }
 
     /// 获取指定请求头的值

@@ -99,6 +99,8 @@ uuid = { version = "1.6", features = ["v4"] }
 rand = "0.8"
 # 独立HTTP客户端支持
 reqwest = { version = "0.11", optional = true, features = ["json", "stream", "gzip", "brotli", "deflate"] }
+# 多语言支持
+rat_embed_lang = { path = "../rat_embed_lang", version = "0.1.1" }
 
 [target.'cfg(unix)'.dependencies]
 # System calls for socket optimization

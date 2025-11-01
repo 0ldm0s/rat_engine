@@ -123,7 +123,7 @@ impl RatGrpcClient {
                 #[cfg(feature = "compression")]
                 {
                     let decompressed = lz4_flex::block::decompress(&data, data.len() * 4)
-                        .map_err(|e| RatError::DecodingError(format!("LZ4 解压缩失败: {}", e)))?;
+                        .map_err(|e| RatError::DecodingError(rat_embed_lang::tf("lz4_decompress_failed", &[("msg", &e.to_string())])))?;
                     Ok(Bytes::from(decompressed))
                 }
                 #[cfg(not(feature = "compression"))]
@@ -147,7 +147,7 @@ impl RatGrpcClient {
         // 直接提取响应数据
         let (parts, body) = response.into_parts();
         let body_bytes = body.collect().await
-            .map_err(|e| RatError::NetworkError(format!("读取响应体失败: {}", e)))?
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_failed", &[("msg", &e.to_string())])))?
             .to_bytes();
         
         Ok((parts.status, parts.headers, body_bytes))
@@ -159,7 +159,7 @@ impl RatGrpcClient {
     {
         // 检查 HTTP 状态码
         if !status.is_success() {
-            return Err(RatError::NetworkError(format!("gRPC HTTP 错误: {}", status)));
+            return Err(RatError::NetworkError(rat_embed_lang::tf("grpc_http_error", &[("msg", &status.to_string())])));
         }
 
         // 检查 Content-Type
@@ -202,7 +202,7 @@ impl RatGrpcClient {
 
         // 使用统一的编解码器解析帧并反序列化
         let message_data = GrpcCodec::parse_frame(&body_bytes)
-            .map_err(|e| RatError::DecodingError(format!("解析 gRPC 帧失败: {}", e)))?;
+            .map_err(|e| RatError::DecodingError(rat_embed_lang::tf("parse_grpc_frame_failed", &[("msg", &e.to_string())])))?;
 
         // 添加反序列化前的调试信息
         eprintln!("=== DEBUG: [客户端] 准备反序列化响应数据，数据大小: {} bytes ===", message_data.len());
@@ -219,7 +219,7 @@ impl RatGrpcClient {
                 eprintln!("=== DEBUG: [客户端] GrpcCodec 反序列化最终数据类型失败: {} ===", e);
                 println!("DEBUG: [客户端] GrpcCodec 反序列化最终数据类型失败: {}", e);
                 error!("❌ [客户端] GrpcCodec 反序列化最终数据类型失败: {}", e);
-                RatError::DeserializationError(format!("反序列化最终数据类型失败: {}", e))
+                RatError::DeserializationError(rat_embed_lang::tf("deserialize_data_type_failed", &[("msg", &e.to_string())]))
             })?;
         eprintln!("=== DEBUG: [客户端] 最终数据类型反序列化成功 ===");
 

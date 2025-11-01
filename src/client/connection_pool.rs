@@ -293,12 +293,12 @@ impl ClientConnectionPool {
             self.config.connect_timeout,
             TcpStream::connect(&addr)
         ).await
-        .map_err(|_| RatError::NetworkError("连接超时".to_string()))?
-            .map_err(|e| RatError::NetworkError(format!("TCP 连接失败: {}", e)))?;
+        .map_err(|_| RatError::NetworkError(rat_embed_lang::t("tcp_timeout")))?
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("tcp_connection_failed", &[("msg", &e.to_string())])))?;
 
         // 配置 TCP 选项
         tcp_stream.set_nodelay(true)
-            .map_err(|e| RatError::NetworkError(format!("设置 TCP_NODELAY 失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("set_tcp_nodelay_failed", &[("msg", &e.to_string())])))?;
 
         // 根据协议执行握手
         let send_request;
@@ -314,7 +314,7 @@ impl ClientConnectionPool {
                 info!("🔐 连接池启用 mTLS 客户端证书认证");
 
                 let mut ssl_builder = SslConnector::builder(SslMethod::tls())
-                    .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
                 // 配置证书验证模式
                 if mtls_config.skip_server_verification || self.config.development_mode {
                     // 开发模式：跳过证书验证
@@ -328,10 +328,10 @@ impl ClientConnectionPool {
                     if let Some(ca_certs) = &mtls_config.ca_certs {
                         for ca_cert in ca_certs {
                             let cert = openssl::x509::X509::from_der(ca_cert)
-                                .map_err(|e| RatError::TlsError(format!("解析 CA 证书失败: {}", e)))?;
+                                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_ca_cert_failed", &[("msg", &e.to_string())])))?;
                             ssl_builder.cert_store_mut()
                                 .add_cert(cert)
-                                .map_err(|e| RatError::TlsError(format!("添加 CA 证书失败: {}", e)))?;
+                                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("add_ca_cert_failed", &[("msg", &e.to_string())])))?;
                         }
                         info!("✅ 连接池已加载 {} 个自定义 CA 证书", ca_certs.len());
                     }
@@ -340,19 +340,19 @@ impl ClientConnectionPool {
                 // 配置客户端证书
                 for cert_data in &mtls_config.client_cert_chain {
                     let cert = openssl::x509::X509::from_pem(cert_data)
-                        .map_err(|e| RatError::TlsError(format!("解析客户端证书失败: {}", e)))?;
+                        .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_client_cert_failed", &[("msg", &e.to_string())])))?;
                     ssl_builder.set_certificate(&cert)
-                        .map_err(|e| RatError::TlsError(format!("设置客户端证书失败: {}", e)))?;
+                        .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_client_cert_failed", &[("msg", &e.to_string())])))?;
                 }
 
                 let key = openssl::pkey::PKey::private_key_from_pem(&mtls_config.client_private_key)
-                    .map_err(|e| RatError::TlsError(format!("解析客户端私钥失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_client_key_failed", &[("msg", &e.to_string())])))?;
                 ssl_builder.set_private_key(&key)
-                    .map_err(|e| RatError::TlsError(format!("设置客户端私钥失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_client_key_failed", &[("msg", &e.to_string())])))?;
 
                 // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
                 ssl_builder.set_alpn_protos(b"\x02h2")
-                    .map_err(|e| RatError::TlsError(format!("设置 ALPN 协议失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_alpn_failed", &[("msg", &e.to_string())])))?;
                 println!("[连接池ALPN调试] mTLS 模式设置 ALPN 协议: h2");
 
                 ssl_builder.build()
@@ -361,11 +361,11 @@ impl ClientConnectionPool {
                 warn!("⚠️  警告：连接池已启用开发模式，将跳过所有 TLS 证书验证！仅用于开发环境！");
 
                 let mut ssl_builder = SslConnector::builder(SslMethod::tls())
-                    .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
 
                 // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
                 ssl_builder.set_alpn_protos(b"\x02h2")
-                    .map_err(|e| RatError::TlsError(format!("设置 ALPN 协议失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_alpn_failed", &[("msg", &e.to_string())])))?;
                 println!("[连接池ALPN调试] 开发模式设置 ALPN 协议: h2");
 
                 ssl_builder.set_verify(SslVerifyMode::NONE);
@@ -376,11 +376,11 @@ impl ClientConnectionPool {
             } else {
                 // 非开发模式：严格证书验证，无客户端证书
                 let mut ssl_builder = SslConnector::builder(SslMethod::tls())
-                    .map_err(|e| RatError::TlsError(format!("创建 SSL 连接器失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
 
                 // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
                 ssl_builder.set_alpn_protos(b"\x02h2")
-                    .map_err(|e| RatError::TlsError(format!("设置 ALPN 协议失败: {}", e)))?;
+                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_alpn_failed", &[("msg", &e.to_string())])))?;
                 println!("[连接池ALPN调试] 标准模式设置 ALPN 协议: h2");
 
                 ssl_builder.set_verify(SslVerifyMode::PEER);
@@ -390,7 +390,7 @@ impl ClientConnectionPool {
 
             // 建立 TLS 连接
             let mut ssl = openssl::ssl::Ssl::new(&ssl_connector.context())
-                .map_err(|e| RatError::NetworkError(format!("创建 SSL 失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("create_ssl_failed", &[("msg", &e.to_string())])))?;
 
             println!("[客户端调试] SSL 对象创建成功");
             println!("[客户端调试] SSL 版本: {:?}", ssl.version_str());
@@ -403,7 +403,7 @@ impl ClientConnectionPool {
 
             // 设置 SNI (Server Name Indication)
             ssl.set_hostname(host)
-                .map_err(|e| RatError::NetworkError(format!("设置 SNI 主机名失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("set_sni_failed", &[("msg", &e.to_string())])))?;
             println!("[客户端调试] SNI 主机名设置: {}", host);
 
             // 设置连接类型为客户端
@@ -411,7 +411,7 @@ impl ClientConnectionPool {
             println!("[客户端调试] SSL 连接类型设置为客户端");
 
             let mut tls_stream = SslStream::new(ssl, tcp_stream)
-                .map_err(|e| RatError::NetworkError(format!("创建 TLS 流失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("create_tls_stream_failed", &[("msg", &e.to_string())])))?;
             println!("[客户端调试] TLS 流创建成功");
 
             // 使用异步方式完成 TLS 握手
@@ -439,7 +439,7 @@ impl ClientConnectionPool {
                     },
                     std::task::Poll::Pending => std::task::Poll::Pending,
                 }
-            }).await.map_err(|e| RatError::NetworkError(format!("TLS 握手失败: {}", e)))?;
+            }).await.map_err(|e| RatError::NetworkError(rat_embed_lang::tf("tls_handshake_failed", &[("msg", &e.to_string())])))?;
 
             // 调试 ALPN 协商结果
             let selected_protocol = tls_stream.ssl().selected_alpn_protocol();
@@ -452,7 +452,7 @@ impl ClientConnectionPool {
             
             // 在 TLS 连接上进行 HTTP/2 握手
             let (send_req, h2_conn) = h2_builder.handshake(tls_stream).await
-                .map_err(|e| RatError::NetworkError(format!("HTTP/2 over TLS 握手失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_tls_handshake_failed", &[("msg", &e.to_string())])))?;
             
             send_request = send_req;
             
@@ -471,7 +471,7 @@ impl ClientConnectionPool {
             h2_builder.max_frame_size(1024 * 1024); // 设置最大帧大小为 1MB
 
             let (send_req, h2_conn) = h2_builder.handshake(tcp_stream).await
-                .map_err(|e| RatError::NetworkError(format!("H2 握手失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_handshake_failed", &[("msg", &e.to_string())])))?;
 
             send_request = send_req;
 
