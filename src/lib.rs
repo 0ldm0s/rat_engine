@@ -19,6 +19,7 @@ pub mod server;
 pub mod client;
 pub mod utils;
 pub mod error;
+pub mod error_i18n;
 #[cfg(feature = "compression")]
 pub mod compression;
 pub mod cache;
@@ -30,6 +31,8 @@ pub mod common;
 lazy_static! {
     static ref _CRYPTO_PROVIDER_INIT: () = {
         utils::crypto_provider::ensure_crypto_provider_installed();
+        // 初始化错误信息多语言支持
+        error_i18n::init_error_translations();
     };
 }
 

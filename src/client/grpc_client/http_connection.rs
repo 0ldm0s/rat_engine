@@ -35,8 +35,8 @@ impl RatGrpcClient {
         // 建立 TCP 连接
         let tcp_stream = timeout(self.connect_timeout, tokio::net::TcpStream::connect(&addr))
             .await
-            .map_err(|_| RatError::TimeoutError(format!("H2 TCP 连接超时: {}", addr)))?
-            .map_err(|e| RatError::NetworkError(format!("H2 TCP 连接失败: {}", e)))?;
+            .map_err(|_| RatError::TimeoutError(rat_embed_lang::tf("h2_tcp_connection_timeout", &[("msg", &addr.to_string())])))?
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_tcp_connection_failed", &[("msg", &e.to_string())])))?;
         
         debug!("✅ H2 TCP 连接已建立: {}", addr);
         
@@ -47,26 +47,26 @@ impl RatGrpcClient {
 
             // 使用异步 TLS 连接
             let mut ssl = openssl::ssl::Ssl::new(&ssl_connector.context())
-                .map_err(|e| RatError::NetworkError(format!("创建 SSL 失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("create_ssl_failed_http", &[("msg", &e.to_string())])))?;
 
             // 配置服务器名称验证（SNI）- 必须在创建 SSL 对象后设置
             if let Some(ref mtls_config) = self.mtls_config {
                 if let Some(ref server_name) = mtls_config.server_name {
                     ssl.set_hostname(server_name)
-                        .map_err(|e| RatError::NetworkError(format!("设置 SNI 主机名失败: {}", e)))?;
+                        .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("set_sni_hostname_failed", &[("msg", &e.to_string())])))?;
                 } else {
                     ssl.set_hostname(host)
-                        .map_err(|e| RatError::NetworkError(format!("设置默认主机名失败: {}", e)))?;
+                        .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("set_default_hostname_failed", &[("msg", &e.to_string())])))?;
                 }
             } else {
                 ssl.set_hostname(host)
-                    .map_err(|e| RatError::NetworkError(format!("设置主机名失败: {}", e)))?;
+                    .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("set_hostname_failed", &[("msg", &e.to_string())])))?;
             }
 
             // 设置连接类型为客户端
             ssl.set_connect_state();
         let mut ssl_stream = SslStream::new(ssl, tcp_stream)
-                .map_err(|e| RatError::NetworkError(format!("创建 TLS 流失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("create_tls_stream_failed", &[("msg", &e.to_string())])))?;
 
         // 使用异步方式完成 TLS 握手
         use futures_util::future::poll_fn;
@@ -87,13 +87,13 @@ impl RatGrpcClient {
                 },
                 std::task::Poll::Pending => std::task::Poll::Pending,
             }
-        }).await.map_err(|e| RatError::NetworkError(format!("TLS 握手失败: {}", e)))?;
+        }).await.map_err(|e| RatError::NetworkError(rat_embed_lang::tf("tls_handshake_failed_http", &[("msg", &e.to_string())])))?;
 
             debug!("🔐 TLS 连接建立成功，开始 HTTP/2 握手");
 
             let (client, h2_connection) = h2::client::handshake(ssl_stream)
                 .await
-                .map_err(|e| RatError::NetworkError(format!("HTTP/2 over TLS 握手失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("http2_over_tls_handshake_failed", &[("msg", &e.to_string())])))?;
 
             // 在后台运行 H2 连接
             tokio::spawn(async move {
@@ -107,7 +107,7 @@ impl RatGrpcClient {
             // H2C: 直接进行 H2 握手
             let (client, h2_connection) = h2::client::handshake(tcp_stream)
                 .await
-                .map_err(|e| RatError::NetworkError(format!("H2C 握手失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2c_handshake_failed", &[("msg", &e.to_string())])))?;
             
             // 在后台运行 H2 连接
             tokio::spawn(async move {
@@ -147,7 +147,7 @@ impl RatGrpcClient {
         let mut body_data = Vec::new();
         
         while let Some(chunk) = body_stream.data().await {
-            let chunk = chunk.map_err(|e| RatError::NetworkError(format!("H2 读取响应体失败: {}", e)))?;
+            let chunk = chunk.map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_read_response_body_failed", &[("msg", &e.to_string())])))?;
             body_data.extend_from_slice(&chunk);
             // 释放流控制窗口
             let _ = body_stream.flow_control().release_capacity(chunk.len());
@@ -168,7 +168,7 @@ impl RatGrpcClient {
         // 构建最终响应
         let response = response_builder
             .body(body)
-            .map_err(|e| RatError::NetworkError(format!("构建响应失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("build_response_failed", &[("msg", &e.to_string())])))?;
         
         Ok(response)
     }
@@ -191,31 +191,31 @@ impl RatGrpcClient {
         
         let h2_request = h2_request
             .body(())
-            .map_err(|e| RatError::RequestError(format!("构建 H2 请求失败: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_h2_request_failed", &[("msg", &e.to_string())])))?;
         
         // 发送请求
         let (response, mut send_stream) = client
             .send_request(h2_request, false)
-            .map_err(|e| RatError::NetworkError(format!("H2 发送请求失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_send_request_failed", &[("msg", &e.to_string())])))?;
         
         // 发送请求体
         let body_bytes = request.into_body().collect().await
-            .map_err(|e| RatError::NetworkError(format!("读取请求体失败: {}", e)))?
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_request_body_failed_http", &[("msg", &e.to_string())])))
             .to_bytes();
         
         if !body_bytes.is_empty() {
             send_stream.send_data(body_bytes, true)
-                .map_err(|e| RatError::NetworkError(format!("H2 发送数据失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_send_data_failed", &[("msg", &e.to_string())])))?;
         } else {
             send_stream.send_data(Bytes::new(), true)
-                .map_err(|e| RatError::NetworkError(format!("H2 发送空数据失败: {}", e)))?;
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_send_empty_data_failed", &[("msg", &e.to_string())])))?;
         }
         
         // 等待响应
         let h2_response = timeout(self.request_timeout, response)
             .await
-            .map_err(|_| RatError::TimeoutError(format!("H2 响应超时: {} {}", method, uri)))?
-            .map_err(|e| RatError::NetworkError(format!("H2 接收响应失败: {}", e)))?;
+            .map_err(|_| RatError::TimeoutError(rat_embed_lang::tf("h2_response_timeout", &[("msg", &format!("{} {}", method, uri))])))?
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_receive_response_failed", &[("msg", &e.to_string())])))?;
         
         Ok(h2_response)
     }

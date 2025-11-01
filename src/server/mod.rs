@@ -199,7 +199,7 @@ async fn run_separated_server(config: ServerConfig, router: Router) -> crate::er
             if let Ok(mut cert_manager_guard) = cert_manager.write() {
                 if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
                     crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
-                    return Err(crate::error::RatError::ConfigError(format!("ALPN 配置失败: {}", e)));
+                    return Err(crate::error::RatError::ConfigError(rat_embed_lang::tf("alpn_config_failed", &[("msg", &e.to_string())])));
                 }
                 crate::utils::logger::info!("✅ ALPN 协议配置成功");
             }

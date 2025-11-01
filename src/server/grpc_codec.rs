@@ -24,7 +24,7 @@ impl GrpcCodec {
         T: Serialize + bincode::Encode,
     {
         bincode::encode_to_vec(message, bincode::config::standard())
-            .map_err(|e| RatError::SerializationError(format!("gRPC 消息序列化失败: {}", e)))
+            .map_err(|e| RatError::SerializationError(rat_embed_lang::tf("grpc_message_serialize_failed", &[("msg", &e.to_string())])))
     }
 
     /// 从字节数组反序列化消息
@@ -40,7 +40,7 @@ impl GrpcCodec {
         T: for<'de> Deserialize<'de> + bincode::Decode<()>,
     {
         let (message, _) = bincode::decode_from_slice(data, bincode::config::standard())
-            .map_err(|e| RatError::DeserializationError(format!("gRPC 消息反序列化失败: {}", e)))?;
+            .map_err(|e| RatError::DeserializationError(rat_embed_lang::tf("grpc_message_deserialize_failed", &[("msg", &e.to_string())])))?;
         Ok(message)
     }
 

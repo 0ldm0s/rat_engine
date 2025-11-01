@@ -86,11 +86,11 @@ impl RatGrpcClient {
         
         // 解析 URI
         let parsed_uri = uri.parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
         
         // 1. 从连接池获取连接
         let connection = self.connection_pool.get_connection(&parsed_uri).await
-            .map_err(|e| RatError::NetworkError(format!("获取连接失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("get_connection_failed", &[("msg", &e.to_string())])))?;
 
         // 2. 直接使用原始请求数据（避免双重序列化）
         let grpc_request = GrpcRequest {
@@ -102,7 +102,7 @@ impl RatGrpcClient {
 
         // 3. 编码 gRPC 消息
         let grpc_message = GrpcCodec::encode_frame(&grpc_request)
-            .map_err(|e| RatError::SerializationError(format!("编码 gRPC 请求失败: {}", e)))?;
+            .map_err(|e| RatError::SerializationError(rat_embed_lang::tf("encode_grpc_request_failed", &[("msg", &e.to_string())])))?;
 
         // 4. 构建 HTTP 请求
         let path = format!("/{}/{}", service, method);
@@ -110,12 +110,12 @@ impl RatGrpcClient {
         
         let request_uri = full_uri
             .parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的请求 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(format!("无效的 User-Agent: {}", e)))?);
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent", &[("msg", &e.to_string())])));
 
         // 5. 创建请求上下文（仅在启用 python 特性时）
         #[cfg(feature = "python")]
@@ -155,7 +155,7 @@ impl RatGrpcClient {
             
             let request = request_builder
                 .body(Full::new(Bytes::from(grpc_message)))
-                .map_err(|e| RatError::RequestError(format!("构建请求失败: {}", e)));
+                .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_request_failed", &[("msg", &e.to_string())])));
 
             let request = match request {
                 Ok(req) => req,
@@ -200,7 +200,7 @@ impl RatGrpcClient {
                             }
                         }
                     } else {
-                        let error = RatError::NetworkError(format!("HTTP 错误: {}", status));
+                        let error = RatError::NetworkError(rat_embed_lang::tf("http_error", &[("msg", &status.to_string())]));
                         error!("❌ 一元请求 HTTP 错误 (请求ID: {}): {}", request_id, error);
                         #[cfg(feature = "python")]
                         {
@@ -243,11 +243,11 @@ impl RatGrpcClient {
         
         // 解析 URI
         let parsed_uri = uri.parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
         
         // 1. 从连接池获取连接
         let connection = self.connection_pool.get_connection(&parsed_uri).await
-            .map_err(|e| RatError::NetworkError(format!("获取连接失败: {}", e)))?;
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("get_connection_failed", &[("msg", &e.to_string())])))?;
 
         // 2. 直接使用原始请求数据（避免双重序列化）
         let grpc_request = GrpcRequest {
@@ -259,7 +259,7 @@ impl RatGrpcClient {
 
         // 3. 编码 gRPC 消息
         let grpc_message = GrpcCodec::encode_frame(&grpc_request)
-            .map_err(|e| RatError::SerializationError(format!("编码 gRPC 请求失败: {}", e)))?;
+            .map_err(|e| RatError::SerializationError(rat_embed_lang::tf("encode_grpc_request_failed", &[("msg", &e.to_string())])))?;
 
         // 4. 构建 HTTP 请求
         let path = format!("/{}/{}", service, method);
@@ -267,12 +267,12 @@ impl RatGrpcClient {
         
         let request_uri = full_uri
             .parse::<Uri>()
-            .map_err(|e| RatError::RequestError(format!("无效的请求 URI: {}", e)))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(format!("无效的 User-Agent: {}", e)))?);        
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent", &[("msg", &e.to_string())])));        
 
         // 5. 启动异步请求处理任务（简化版本，无 handler 回调）
         let client_clone = self.clone();
@@ -291,7 +291,7 @@ impl RatGrpcClient {
             
             let request = request_builder
                 .body(Full::new(Bytes::from(grpc_message)))
-                .map_err(|e| RatError::RequestError(format!("构建请求失败: {}", e)));
+                .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_request_failed", &[("msg", &e.to_string())])));
 
             let request = match request {
                 Ok(req) => req,
@@ -315,7 +315,7 @@ impl RatGrpcClient {
                             }
                         }
                     } else {
-                        let error = RatError::NetworkError(format!("HTTP 错误: {}", status));
+                        let error = RatError::NetworkError(rat_embed_lang::tf("http_error", &[("msg", &status.to_string())]));
                         error!("❌ 一元请求 HTTP 错误 (请求ID: {}): {}", request_id, error);
                     }
                 }

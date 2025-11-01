@@ -104,7 +104,7 @@ impl ClientStreamSender {
                 Ok(())
             },
             Err(e) => {
-                let error_msg = format!("发送失败: {}", e);
+                let error_msg = rat_embed_lang::tf("send_failed", &[("msg", &e.to_string())]);
                 error!("❌ [ClientStreamSender] {}", error_msg);
                 Err(error_msg)
             }
@@ -117,7 +117,7 @@ impl ClientStreamSender {
         T: Serialize + Send + 'static + bincode::Encode,
     {
         let serialized = GrpcCodec::encode(&data)
-            .map_err(|e| format!("编码数据失败: {}", e))?;
+            .map_err(|e| rat_embed_lang::tf("encode_data_failed", &[("msg", &e.to_string())]))?;
         
         self.send_raw(serialized).await
     }
@@ -131,7 +131,7 @@ impl ClientStreamSender {
         
         // 使用统一编解码器序列化关闭消息
         let serialized = GrpcCodec::encode(&close_message)
-            .map_err(|e| format!("编码关闭指令失败: {}", e))?;
+            .map_err(|e| rat_embed_lang::tf("encode_close_failed", &[("msg", &e.to_string())]))?;
         
         info!("📤 [客户端] ClientStreamSender 发送关闭指令");
         

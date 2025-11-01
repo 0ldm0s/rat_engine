@@ -59,13 +59,13 @@ where
     pub async fn send(&mut self, data: T) -> Result<(), String> {
         // 使用统一的编解码器序列化数据
         let serialized = GrpcCodec::encode(&data)
-            .map_err(|e| format!("GrpcCodec 序列化失败: {}", e))?;
+            .map_err(|e| rat_embed_lang::tf("grpc_serialize_failed", &[("msg", &e.to_string())]))?;
         
         info!("📤 [客户端] GrpcStreamSender 发送数据，大小: {} 字节", serialized.len());
         
         // 发送到内部通道
         self.inner.send(Bytes::from(serialized))
-            .map_err(|e| format!("发送失败: {}", e))
+            .map_err(|e| rat_embed_lang::tf("send_failed", &[("msg", &e.to_string())]))
     }
 }
 
@@ -87,13 +87,13 @@ where
         
         // 使用统一的编解码器序列化关闭消息
         let serialized = GrpcCodec::encode(&close_message)
-            .map_err(|e| format!("GrpcCodec 序列化关闭指令失败: {}", e))?;
+            .map_err(|e| rat_embed_lang::tf("grpc_serialize_close_failed", &[("msg", &e.to_string())]))?;
         
         info!("📤 [客户端] GrpcStreamSender 发送关闭指令，大小: {} 字节", serialized.len());
         
         // 发送关闭指令到内部通道
         self.inner.send(Bytes::from(serialized))
-            .map_err(|e| format!("发送关闭指令失败: {}", e))
+            .map_err(|e| rat_embed_lang::tf("send_close_failed", &[("msg", &e.to_string())]))
     }
 }
 
@@ -105,7 +105,7 @@ impl GrpcStreamSender<Vec<u8>> {
         
         // 直接发送原始字节，不进行额外序列化
         self.inner.send(Bytes::from(data))
-            .map_err(|e| format!("发送失败: {}", e))
+            .map_err(|e| rat_embed_lang::tf("send_failed", &[("msg", &e.to_string())]))
     }
 }
 
@@ -145,7 +145,7 @@ where
                         info!("📥 [客户端] GrpcStreamReceiver 接收数据，大小: {} 字节", bytes.len());
                         Poll::Ready(Some(Ok(data)))
                     },
-                    Err(e) => Poll::Ready(Some(Err(RatError::DecodingError(format!("GrpcCodec 反序列化失败: {}", e))))),
+                    Err(e) => Poll::Ready(Some(Err(RatError::DecodingError(rat_embed_lang::tf("grpc_deserialize_failed", &[("msg", &e.to_string())]))))),
                 }
             }
             Poll::Ready(None) => Poll::Ready(None),
