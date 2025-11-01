@@ -79,6 +79,7 @@ impl AsyncWrite for ReconstructedStream {
 }
 pub mod config;
 pub mod port_config;
+pub mod cors;
 pub mod router;
 pub mod trie_router;
 pub mod worker_pool;

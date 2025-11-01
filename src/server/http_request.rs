@@ -488,4 +488,30 @@ impl HttpRequest {
     pub fn python_handler_name(&self) -> Option<&String> {
         self.python_handler_name.as_ref()
     }
+
+    // ========== CORS 相关方法 ==========
+
+    /// 检查是否为CORS预检请求
+    pub fn is_cors_preflight(&self) -> bool {
+        self.method == hyper::Method::OPTIONS &&
+           (self.header("Access-Control-Request-Method").is_some() ||
+            self.header("access-control-request-method").is_some())
+    }
+
+    /// 获取CORS Origin头部
+    pub fn cors_origin(&self) -> Option<&str> {
+        self.header("Origin").or_else(|| self.header("origin"))
+    }
+
+    /// 获取CORS请求方法
+    pub fn cors_requested_method(&self) -> Option<&str> {
+        self.header("Access-Control-Request-Method")
+            .or_else(|| self.header("access-control-request-method"))
+    }
+
+    /// 获取CORS请求头部
+    pub fn cors_requested_headers(&self) -> Option<&str> {
+        self.header("Access-Control-Request-Headers")
+            .or_else(|| self.header("access-control-request-headers"))
+    }
 }

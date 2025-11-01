@@ -717,7 +717,10 @@ pub struct Router {
     // SPA 配置
     spa_config: SpaConfig,
 
+    // CORS 配置
+    cors_config: Option<crate::server::cors::CorsConfig>,
     // 中间件
+    #[cfg(feature = "compression")]
     compressor: Option<Arc<crate::compression::Compressor>>,
     #[cfg(feature = "cache")]
     cache_middleware: Option<Arc<crate::server::cache_middleware_impl::CacheMiddlewareImpl>>,
@@ -749,6 +752,8 @@ impl Router {
             http_streaming_handlers: Vec::new(),
             blacklist: Arc::new(RwLock::new(HashSet::new())),
             spa_config: SpaConfig::default(),
+            cors_config: None,
+            #[cfg(feature = "compression")]
             compressor: None,
             #[cfg(feature = "cache")]
             cache_middleware: None,
@@ -936,6 +941,92 @@ impl Router {
         crate::utils::logger::debug!("🔍 [Router] 开始 Radix Tree 路由匹配: {} {}", method, path);
         crate::utils::logger::debug!("🔍 [Router] 注册的HTTP处理器数量: {}", self.http_handlers.len());
 
+        // 检查 CORS 预检请求
+        if let Some(cors_config) = &self.cors_config {
+            if cors_config.enabled && req.is_cors_preflight() {
+                crate::utils::logger::debug!("🌐 [CORS] 检测到预检请求: {} {}", method, path);
+
+                // 验证预检请求
+                if let Some(origin) = req.cors_origin() {
+                    if !cors_config.is_origin_allowed(origin) {
+                        crate::utils::logger::warn!("🌐 [CORS] 拒绝来源: {}", origin);
+                        return Ok(self.create_error_response(StatusCode::FORBIDDEN, "CORS: Origin not allowed"));
+                    }
+                } else {
+                    return Ok(self.create_error_response(StatusCode::BAD_REQUEST, "CORS: Preflight request must include Origin header"));
+                }
+
+                if let Some(method_str) = req.cors_requested_method() {
+                    if let Ok(method) = hyper::Method::from_bytes(method_str.as_bytes()) {
+                        if !cors_config.allowed_methods.contains(&method) {
+                            crate::utils::logger::warn!("🌐 [CORS] 拒绝方法: {}", method);
+                            return Ok(self.create_error_response(StatusCode::FORBIDDEN, "CORS: Method not allowed"));
+                        }
+                    } else {
+                        return Ok(self.create_error_response(StatusCode::BAD_REQUEST, "CORS: Invalid method"));
+                    }
+                }
+
+                if let Some(headers) = req.cors_requested_headers() {
+                    for header in headers.split(',') {
+                        let header = header.trim();
+                        if !cors_config.allowed_headers.iter().any(|allowed| {
+                            allowed == "*" || allowed.to_lowercase() == header.to_lowercase()
+                        }) {
+                            crate::utils::logger::warn!("🌐 [CORS] 拒绝头部: {}", header);
+                            return Ok(self.create_error_response(StatusCode::FORBIDDEN, "CORS: Header not allowed"));
+                        }
+                    }
+                }
+
+                // 创建预检请求成功响应
+                let mut response = Response::builder()
+                    .status(StatusCode::OK);
+
+                if let Some(origin) = req.cors_origin() {
+                    response = response.header("Access-Control-Allow-Origin", origin);
+                }
+
+                response = response.header(
+                    "Access-Control-Allow-Methods",
+                    cors_config.allowed_methods
+                        .iter()
+                        .map(|m| m.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+
+                if !cors_config.allowed_headers.is_empty() {
+                    let headers = if cors_config.allowed_headers.contains(&"*".to_string()) {
+                        req.cors_requested_headers().unwrap_or("")
+                    } else {
+                        &cors_config.allowed_headers.join(", ")
+                    };
+                    response = response.header("Access-Control-Allow-Headers", headers);
+                }
+
+                if cors_config.allow_credentials {
+                    response = response.header("Access-Control-Allow-Credentials", "true");
+                }
+
+                if let Some(max_age) = cors_config.max_age {
+                    response = response.header("Access-Control-Max-Age", max_age.to_string());
+                }
+
+                crate::utils::logger::info!("🌐 [CORS] 预检请求处理成功");
+
+                // 使用现有的响应创建方法避免类型问题
+                let mut response = self.create_error_response(StatusCode::OK, "CORS preflight successful");
+
+                // 添加 CORS 头部
+                if let Some(origin) = req.cors_origin() {
+                    response.headers_mut().insert("Access-Control-Allow-Origin", hyper::header::HeaderValue::from_str(origin).unwrap());
+                }
+
+                return Ok(response);
+            }
+        }
+
         // 🆕 使用 Radix Tree 进行智能路由匹配
         let matches = self.route_tree.find_routes(&method, &path);
 
@@ -985,6 +1076,8 @@ impl Router {
                             response = self.apply_cache_middleware(&req_with_params, response).await?;
                         }
 
+                        // 应用 CORS 头部
+                        let response = self.apply_cors_headers(response, &req_with_params);
                         // 应用压缩
                         return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
                     }
@@ -995,6 +1088,8 @@ impl Router {
                     let boxed_body = BoxBody::new(body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
                     let mut response = Response::from_parts(parts, boxed_body);
 
+                    // 应用 CORS 头部
+                    response = self.apply_cors_headers(response, &req_with_params);
                     return Ok(self.apply_compression_boxed(response, &path, &req_with_params).await?);
                 }
             }
@@ -1184,6 +1279,45 @@ impl Router {
             }
         }
         false
+    }
+
+    /// 应用 CORS 头部
+    fn apply_cors_headers(&self, response: Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, req: &HttpRequest) -> Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>> {
+        // 如果 CORS 未启用，直接返回原响应
+        if let Some(cors_config) = &self.cors_config {
+            if cors_config.enabled {
+                let (parts, body) = response.into_parts();
+                let mut response_parts = parts;
+
+                // 检查请求来源
+                if let Some(origin) = req.cors_origin() {
+                    if cors_config.is_origin_allowed(origin) {
+                        crate::utils::logger::debug!("🌐 [CORS] 添加头部: {}", origin);
+                        response_parts.headers.insert("Access-Control-Allow-Origin", hyper::header::HeaderValue::from_str(origin).unwrap());
+                    } else {
+                        crate::utils::logger::warn!("🌐 [CORS] 拒绝来源: {}", origin);
+                    }
+                } else {
+                    // 如果没有 Origin 头部，可能是同源请求，不需要添加 CORS 头部
+                    crate::utils::logger::debug!("🌐 [CORS] 没有 Origin 头部，跳过 CORS 处理");
+                }
+
+                // 添加允许的认证信息
+                if cors_config.allow_credentials {
+                    response_parts.headers.insert("Access-Control-Allow-Credentials", hyper::header::HeaderValue::from_static("true"));
+                }
+
+                // 添加暴露的头部
+                if !cors_config.exposed_headers.is_empty() {
+                    let exposed = cors_config.exposed_headers.join(", ");
+                    response_parts.headers.insert("Access-Control-Expose-Headers", hyper::header::HeaderValue::from_str(&exposed).unwrap());
+                }
+
+                return Response::from_parts(response_parts, body);
+            }
+        }
+
+        response
     }
 
     /// 应用压缩（BoxBody 版本）
@@ -1431,7 +1565,14 @@ impl Router {
 
     // ========== 配置方法 ==========
 
+    /// 启用 CORS
+    pub fn enable_cors(&mut self, config: crate::server::cors::CorsConfig) -> &mut Self {
+        self.cors_config = Some(config);
+        self
+    }
+
     /// 启用压缩
+    #[cfg(feature = "compression")]
     pub fn enable_compression(&mut self, config: crate::compression::CompressionConfig) -> &mut Self {
         self.compressor = Some(Arc::new(crate::compression::Compressor::new(config)));
         self
