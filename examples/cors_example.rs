@@ -31,9 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 rat_engine::server::cors::CorsConfig::new()
                     .enable()
                     .allowed_origins(vec![
-                        "http://localhost:3000".to_string(),
-                        "https://example.com".to_string(),
-                        "https://*.example.com".to_string(), // 支持通配符
+                        "*".to_string(), // 允许所有来源
                     ])
                     .allowed_methods(vec![
                         Method::GET,

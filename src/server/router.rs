@@ -979,21 +979,31 @@ impl Router {
                     }
                 }
 
-                // 创建预检请求成功响应
-                let mut response = Response::builder()
-                    .status(StatusCode::OK);
+                crate::utils::logger::info!("🌐 [CORS] 预检请求处理成功");
 
+                // 创建符合CORS规范的预检响应：空响应体，无Content-Type
+                let empty_body = BoxBody::new(http_body_util::Full::new(Bytes::new())
+                    .map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} }));
+
+                let mut response = Response::builder()
+                    .status(StatusCode::OK)
+                    .body(empty_body)
+                    .unwrap();
+
+                // 添加 CORS 头部
                 if let Some(origin) = req.cors_origin() {
-                    response = response.header("Access-Control-Allow-Origin", origin);
+                    response.headers_mut().insert("Access-Control-Allow-Origin", hyper::header::HeaderValue::from_str(origin).unwrap());
                 }
 
-                response = response.header(
+                response.headers_mut().insert(
                     "Access-Control-Allow-Methods",
-                    cors_config.allowed_methods
-                        .iter()
-                        .map(|m| m.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    hyper::header::HeaderValue::from_str(
+                        &cors_config.allowed_methods
+                            .iter()
+                            .map(|m| m.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ).unwrap()
                 );
 
                 if !cors_config.allowed_headers.is_empty() {
@@ -1002,25 +1012,15 @@ impl Router {
                     } else {
                         &cors_config.allowed_headers.join(", ")
                     };
-                    response = response.header("Access-Control-Allow-Headers", headers);
+                    response.headers_mut().insert("Access-Control-Allow-Headers", hyper::header::HeaderValue::from_str(headers).unwrap());
                 }
 
                 if cors_config.allow_credentials {
-                    response = response.header("Access-Control-Allow-Credentials", "true");
+                    response.headers_mut().insert("Access-Control-Allow-Credentials", hyper::header::HeaderValue::from_static("true"));
                 }
 
                 if let Some(max_age) = cors_config.max_age {
-                    response = response.header("Access-Control-Max-Age", max_age.to_string());
-                }
-
-                crate::utils::logger::info!("🌐 [CORS] 预检请求处理成功");
-
-                // 使用现有的响应创建方法避免类型问题
-                let mut response = self.create_error_response(StatusCode::OK, "CORS preflight successful");
-
-                // 添加 CORS 头部
-                if let Some(origin) = req.cors_origin() {
-                    response.headers_mut().insert("Access-Control-Allow-Origin", hyper::header::HeaderValue::from_str(origin).unwrap());
+                    response.headers_mut().insert("Access-Control-Max-Age", hyper::header::HeaderValue::from_str(&max_age.to_string()).unwrap());
                 }
 
                 return Ok(response);
