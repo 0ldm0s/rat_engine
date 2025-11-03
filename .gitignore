@@ -79,4 +79,4 @@ LOCK
 *.txt
 
 # docs目录下的md文件允许
-docs/*.md
+!docs/**/*.md
