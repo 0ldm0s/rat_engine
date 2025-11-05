@@ -80,7 +80,7 @@ impl RatGrpcClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])));
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?);
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
         headers.insert("grpc-stream-type", HeaderValue::from_static("server-stream"));
         
@@ -198,7 +198,7 @@ impl RatGrpcClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])));
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?);
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
         headers.insert("grpc-stream-type", HeaderValue::from_static("server-stream"));
         
@@ -227,7 +227,6 @@ impl RatGrpcClient {
             stream,
         })
     }
-
 
     /// 创建服务端流 - 直接使用 H2 RecvStream
     fn create_server_stream<R>(&self, mut recv_stream: RecvStream) -> Pin<Box<dyn Stream<Item = Result<GrpcStreamMessage<R>, RatError>> + Send>>

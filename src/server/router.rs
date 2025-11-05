@@ -1043,10 +1043,13 @@ impl Router {
                 if best_match.route_info.handler_id < self.http_streaming_handlers.len() {
                     let handler = &self.http_streaming_handlers[best_match.route_info.handler_id];
                     let req_with_params = Self::set_path_params_and_handler_to_request(req, best_match.params.clone(), best_match.route_info.python_handler_name.clone());
-                    let response = handler(req_with_params, best_match.params.clone()).await?;
+                    let response = handler(req_with_params.clone(), best_match.params.clone()).await?;
                     let (parts, body) = response.into_parts();
                     let boxed_body = BoxBody::new(body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e }));
-                    return Ok(Response::from_parts(parts, boxed_body));
+                    let response = Response::from_parts(parts, boxed_body);
+                    // 🆕 应用CORS头部到流式响应
+                    let cors_response = self.apply_cors_headers_to_streaming(response, &req_with_params);
+                    return Ok(cors_response);
                 }
             } else {
                 // 标准HTTP路由
@@ -1300,6 +1303,45 @@ impl Router {
                 } else {
                     // 如果没有 Origin 头部，可能是同源请求，不需要添加 CORS 头部
                     crate::utils::logger::debug!("🌐 [CORS] 没有 Origin 头部，跳过 CORS 处理");
+                }
+
+                // 添加允许的认证信息
+                if cors_config.allow_credentials {
+                    response_parts.headers.insert("Access-Control-Allow-Credentials", hyper::header::HeaderValue::from_static("true"));
+                }
+
+                // 添加暴露的头部
+                if !cors_config.exposed_headers.is_empty() {
+                    let exposed = cors_config.exposed_headers.join(", ");
+                    response_parts.headers.insert("Access-Control-Expose-Headers", hyper::header::HeaderValue::from_str(&exposed).unwrap());
+                }
+
+                return Response::from_parts(response_parts, body);
+            }
+        }
+
+        response
+    }
+
+    /// 应用 CORS 头部到流式响应
+    fn apply_cors_headers_to_streaming(&self, response: Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, req: &HttpRequest) -> Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>> {
+        // 如果 CORS 未启用，直接返回原响应
+        if let Some(cors_config) = &self.cors_config {
+            if cors_config.enabled {
+                let (parts, body) = response.into_parts();
+                let mut response_parts = parts;
+
+                // 检查请求来源
+                if let Some(origin) = req.cors_origin() {
+                    if cors_config.is_origin_allowed(origin) {
+                        crate::utils::logger::debug!("🌐 [CORS] 流式响应添加头部: {}", origin);
+                        response_parts.headers.insert("Access-Control-Allow-Origin", hyper::header::HeaderValue::from_str(origin).unwrap());
+                    } else {
+                        crate::utils::logger::warn!("🌐 [CORS] 流式响应拒绝来源: {}", origin);
+                    }
+                } else {
+                    // 如果没有 Origin 头部，可能是同源请求，不需要添加 CORS 头部
+                    crate::utils::logger::debug!("🌐 [CORS] 流式响应没有 Origin 头部，跳过 CORS 处理");
                 }
 
                 // 添加允许的认证信息

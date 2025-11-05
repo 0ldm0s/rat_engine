@@ -153,7 +153,7 @@ impl RatGrpcClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?);
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
         
         if let Some(encoding) = content_encoding {
@@ -239,7 +239,7 @@ impl RatGrpcClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
-            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?;
+            .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?);
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
         
         if let Some(encoding) = content_encoding {

@@ -200,7 +200,7 @@ impl RatGrpcClient {
         
         // 发送请求体
         let body_bytes = request.into_body().collect().await
-            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_request_body_failed_http", &[("msg", &e.to_string())])))
+            .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_request_body_failed_http", &[("msg", &e.to_string())])))?
             .to_bytes();
         
         if !body_bytes.is_empty() {

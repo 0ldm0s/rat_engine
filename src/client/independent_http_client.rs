@@ -183,11 +183,11 @@ impl RatIndependentHttpClient {
         let body_bytes = if self.auto_decompress {
             // reqwest自动解压缩，获取解压后的数据
             response.bytes().await
-                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_body_failed", &[("msg", &e.to_string())])))
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_body_failed", &[("msg", &e.to_string())])))?
         } else {
             // 获取原始压缩数据
             response.bytes().await
-                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_body_failed", &[("msg", &e.to_string())])))
+                .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("read_response_body_failed", &[("msg", &e.to_string())])))?
         };
 
         let original_size = body_bytes.len();
@@ -568,8 +568,8 @@ impl RatIndependentHttpClientBuilder {
         V: TryInto<HeaderValue>,
         V::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let header_name = key.try_into().map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_header_name", &[("msg", &e.into())])))?;
-        let header_value = value.try_into().map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_header_value", &[("msg", &e.into())])))?;
+        let header_name = key.try_into().map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_header_name", &[("msg", "invalid header name")])))?;
+        let header_value = value.try_into().map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_header_value", &[("msg", "invalid header value")])))?;
         self.default_headers.insert(header_name, header_value);
         Ok(self)
     }

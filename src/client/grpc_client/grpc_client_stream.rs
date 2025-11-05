@@ -46,7 +46,7 @@ impl RatGrpcClient {
         R: for<'de> Deserialize<'de> + Send + Sync + 'static + bincode::Decode<()>,
     {
         let base_uri: Uri = uri.parse()
-            .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
+            .map_err(|e| RatError::ConfigError(rat_embed_lang::tf("invalid_uri", &[("msg", &format!("{}", e))])))?;
         
         // 从连接池获取连接
         let connection = self.connection_pool.get_connection(&base_uri).await
