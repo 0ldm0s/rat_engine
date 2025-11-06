@@ -725,6 +725,13 @@
                             this.handleUploadComplete(data);
                         }
                         break;
+                    case 'init':
+                        console.log('✅ 处理初始化消息（小写）');
+                        this.log('📡 接收初始状态', 'info');
+                        if (data.completed) {
+                            this.handleUploadComplete(data);
+                        }
+                        break;
 
                     case 'Progress':
                         console.log('✅ 处理进度消息:', {

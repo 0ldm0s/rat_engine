@@ -420,17 +420,49 @@ async fn handle_upload_chunk(
                 session.received_chunks.len(),
                 session.total_chunks
             );
-            if session.received_chunks.len() == session.total_chunks as usize {
+            let response = if session.received_chunks.len() == session.total_chunks as usize {
                 println!("🚀 上传完成，触发完成流程");
-                complete_upload(&chunk_req.session_id, session, &state).await;
+
+                // 克隆需要的数据用于异步处理
+                let session_id_clone = chunk_req.session_id.clone();
+                let state_clone = state.clone();
+                let filename_clone = session.filename.clone();
+                let file_size = session.file_size;
+                let temp_file_path_clone = session.temp_file_path.clone();
+                let file_hash_clone = session.file_hash.clone();
+
+                // 异步执行完成流程，避免阻塞HTTP响应
+                tokio::spawn(async move {
+                    // 创建一个新的session对象用于异步处理
+                    let async_session = UploadSession {
+                        id: session_id_clone.clone(),
+                        filename: filename_clone,
+                        file_size,
+                        file_hash: file_hash_clone,
+                        total_chunks: 0, // 不需要
+                        received_chunks: std::collections::HashMap::new(), // 不需要
+                        temp_file_path: temp_file_path_clone,
+                        created_at: std::time::SystemTime::now(),
+                        completed: false,
+                        progress: 100.0,
+                    };
+
+                    complete_upload(&session_id_clone, &async_session, &state_clone).await;
+                });
+
+                ChunkResponse {
+                    success: true,
+                    progress: 100.0,
+                    completed: true,
+                }
             } else {
                 println!("📤 上传进行中，等待更多分块");
-            }
 
-            let response = ChunkResponse {
-                success: true,
-                progress: session.progress,
-                completed: session.completed,
+                ChunkResponse {
+                    success: true,
+                    progress: session.progress,
+                    completed: session.completed,
+                }
             };
 
             return json_response(&response, StatusCode::OK);
@@ -661,15 +693,18 @@ async fn complete_upload(session_id: &str, session: &UploadSession, state: &Arc<
         }
 
         // 更新会话状态
+        println!("🔍 更新会话状态...");
         {
             let mut sessions = state.sessions.write().await;
             if let Some(s) = sessions.get_mut(session_id) {
                 s.completed = true;
                 s.progress = 100.0;
+                println!("🔍 会话状态已更新为完成");
             }
         }
 
         // 广播完成消息
+        println!("🔍 准备广播Completed消息...");
         broadcast_progress(
             session_id,
             ProgressMessage::Completed {
@@ -680,6 +715,7 @@ async fn complete_upload(session_id: &str, session: &UploadSession, state: &Arc<
                 progress: 100.0,
             },
         );
+        println!("🔍 Completed消息广播完成");
 
         // 延迟断开SSE连接，确保客户端能接收到完成消息
         let sse_manager = get_global_sse_manager();
