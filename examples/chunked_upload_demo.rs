@@ -135,7 +135,7 @@ struct ErrorResponse {
     error: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(tag = "type")]
 enum ProgressMessage {
     Init {
@@ -416,8 +416,15 @@ async fn handle_upload_chunk(
             );
 
             // 检查是否完成
+            println!("🔍 检查完成状态: {}/{}",
+                session.received_chunks.len(),
+                session.total_chunks
+            );
             if session.received_chunks.len() == session.total_chunks as usize {
+                println!("🚀 上传完成，触发完成流程");
                 complete_upload(&chunk_req.session_id, session, &state).await;
+            } else {
+                println!("📤 上传进行中，等待更多分块");
             }
 
             let response = ChunkResponse {
@@ -617,15 +624,28 @@ fn broadcast_progress(
                 "total_chunks": total_chunks
             }).to_string()
         },
-        _ => serde_json::to_string(&message).unwrap(),
+        _ => {
+            println!("🔍 发送非Progress消息: {:?}", message);
+            serde_json::to_string(&message).unwrap()
+        },
     };
 
+    println!("🔍 发送SSE消息 [{}]: {}", session_id, msg);
     if let Err(e) = sse_manager.send_data(session_id, &msg) {
         eprintln!("❌ 发送SSE消息失败: {}", e);
+    } else {
+        println!("✅ SSE消息发送成功");
     }
 }
 
 async fn complete_upload(session_id: &str, session: &UploadSession, state: &Arc<AppState>) {
+    println!("🔍 开始完成上传流程: {}", session_id);
+    println!("🔍 会话状态: 接收 {}/{}, 进度: {}%",
+        session.received_chunks.len(),
+        session.total_chunks,
+        session.progress
+    );
+
     // 重命名临时文件
     let final_file_path = format!("{}/{}", UPLOAD_DIR, session.filename);
     if let Ok(_) = async_fs::rename(&session.temp_file_path, &final_file_path).await {
@@ -661,9 +681,13 @@ async fn complete_upload(session_id: &str, session: &UploadSession, state: &Arc<
             },
         );
 
-        // 断开SSE连接
+        // 延迟断开SSE连接，确保客户端能接收到完成消息
         let sse_manager = get_global_sse_manager();
-        let _ = sse_manager.send_data(session_id, "DISCONNECT_EVENT");
+        let session_id_clone = session_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let _ = sse_manager.send_data(&session_id_clone, "DISCONNECT_EVENT");
+        });
 
         println!("✅ 文件上传完成: {} ({})", session.filename, format_bytes(session.file_size));
 

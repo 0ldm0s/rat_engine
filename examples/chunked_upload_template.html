@@ -668,8 +668,12 @@
                     const speed = bytesDiff / timeDiff / 1024; // KB/s
                     const elapsed = (now - this.startTime) / 1000; // 秒
 
+                    // 更新4个方块中的速度
                     document.getElementById('uploadSpeedStat').textContent = Math.round(speed);
                     document.getElementById('timeElapsedStat').textContent = Math.round(elapsed);
+
+                    // 更新进度条下面的速度显示
+                    document.getElementById('progressSpeed').textContent = `${Math.round(speed)} KB/s`;
 
                     this.lastProgressTime = now;
                     this.lastUploadedBytes = this.uploadedBytes;
@@ -784,6 +788,7 @@
             }
 
             handleUploadComplete(data) {
+                console.log('🎉 处理上传完成，数据:', data);
                 this.updateProgress(100);
                 this.log('🎉 文件上传完成！', 'success');
                 this.log(`📊 文件大小：${this.formatSize(data.file_size)}`, 'info');
@@ -809,6 +814,8 @@
                 // 更新按钮状态
                 document.getElementById('uploadBtn').style.display = 'none';
                 document.getElementById('cancelBtn').style.display = 'none';
+
+                console.log('✅ 上传完成处理完毕');
             }
 
             cancelUpload() {
