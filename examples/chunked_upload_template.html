@@ -685,11 +685,15 @@
                 this.sseCompleted = false;
 
                 this.eventSource.onmessage = (event) => {
+                    console.log('🔍 收到原始SSE数据:', event.data);
                     try {
                         const data = JSON.parse(event.data);
+                        console.log('🔍 解析后的SSE数据:', data);
                         this.handleSSEMessage(data);
                     } catch (error) {
-                        console.error('SSE 解析错误:', error);
+                        console.error('❌ SSE 解析错误:', error);
+                        console.error('❌ 原始数据:', event.data);
+                        console.error('❌ 错误详情:', error.message);
                     }
                 };
 
@@ -706,30 +710,43 @@
             }
 
             handleSSEMessage(data) {
+                console.log('🔍 处理SSE消息:', data);
+                console.log('🔍 消息类型:', data.type);
+
                 switch (data.type) {
-                    case 'init':
+                    case 'Init':
+                        console.log('✅ 处理初始化消息');
                         this.log('📡 接收初始状态', 'info');
                         if (data.completed) {
                             this.handleUploadComplete(data);
                         }
                         break;
 
-                    case 'progress':
+                    case 'Progress':
+                        console.log('✅ 处理进度消息:', {
+                            progress: data.progress,
+                            chunk_index: data.chunk_index,
+                            received_chunks: data.received_chunks,
+                            total_chunks: data.total_chunks
+                        });
                         this.updateProgress(data.progress);
                         this.updateChunkStats(data.received_chunks, data.total_chunks);
                         this.log(`📈 上传进度：${data.received_chunks}/${data.total_chunks} 分块 (${data.progress.toFixed(1)}%)`, 'info');
                         break;
 
-                    case 'completed':
+                    case 'Completed':
+                        console.log('✅ 处理完成消息');
                         this.handleUploadComplete(data);
                         break;
 
-                    case 'heartbeat':
+                    case 'Heartbeat':
+                        console.log('💓 处理心跳消息');
                         // 心跳，不显示
                         break;
 
                     default:
-                        console.log('未知SSE消息:', data);
+                        console.error('❌ 未知SSE消息类型:', data.type);
+                        console.error('❌ 完整消息对象:', data);
                 }
             }
 
