@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAT Engine - 大文件分块上传</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .features {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .feature {
+            background: rgba(255,255,255,0.2);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .upload-zone {
+            border: 3px dashed #ddd;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            margin-bottom: 30px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            background: #fafafa;
+        }
+
+        .upload-zone:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+            transform: translateY(-2px);
+        }
+
+        .upload-zone.dragover {
+            border-color: #764ba2;
+            background: #f0f4ff;
+            transform: scale(1.02);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.2);
+        }
+
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            color: #ddd;
+            transition: all 0.3s ease;
+        }
+
+        .upload-zone:hover .upload-icon {
+            color: #667eea;
+            transform: scale(1.1);
+        }
+
+        .upload-text {
+            font-size: 1.3em;
+            color: #333;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }
+
+        .upload-hint {
+            color: #666;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+
+        .file-input { display: none; }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .file-info {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: 25px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            display: none;
+            border: 1px solid #e0e0e0;
+        }
+
+        .file-info h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .file-info p {
+            color: #666;
+            margin: 8px 0;
+            font-size: 1em;
+        }
+
+        .file-info strong {
+            color: #333;
+            min-width: 80px;
+            display: inline-block;
+        }
+
+        .progress-section {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .progress-container {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 12px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .progress-title {
+            font-size: 1.1em;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .progress-percentage {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 15px;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.3),
+                transparent
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-details {
+            display: flex;
+            justify-content: space-between;
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .progress-text {
+            text-align: center;
+            color: #666;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+
+        .log-section {
+            margin-top: 25px;
+            max-height: 250px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            font-size: 0.9em;
+            border: 1px solid #e0e0e0;
+        }
+
+        .log-entry {
+            margin: 4px 0;
+            padding: 4px 8px;
+            border-radius: 4px;
+            line-height: 1.4;
+        }
+
+        .log-info {
+            color: #17a2b8;
+            background: rgba(23, 162, 184, 0.1);
+        }
+
+        .log-success {
+            color: #28a745;
+            background: rgba(40, 167, 69, 0.1);
+        }
+
+        .log-error {
+            color: #dc3545;
+            background: rgba(220, 53, 69, 0.1);
+        }
+
+        .log-warning {
+            color: #ffc107;
+            background: rgba(255, 193, 7, 0.1);
+        }
+
+        .stats-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 25px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid #e0e0e0;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .download-section {
+            display: none;
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .download-btn {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+            text-decoration: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            display: inline-block;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);
+        }
+
+        .download-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(40, 167, 69, 0.4);
+        }
+
+        .clear-btn {
+            background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+            margin-left: 10px;
+        }
+
+        /* 滚动条样式 */
+        .log-section::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .log-section::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        .log-section::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 4px;
+        }
+
+        .log-section::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+
+            .content {
+                padding: 25px;
+            }
+
+            .upload-zone {
+                padding: 40px 15px;
+            }
+
+            .features {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .stats-section {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 RAT Engine</h1>
+            <p>高性能大文件分块上传演示</p>
+            <div class="features">
+                <div class="feature">📦 分块上传</div>
+                <div class="feature">⚡ 实时进度</div>
+                <div class="feature">🔒 完整性验证</div>
+                <div class="feature">🔄 断点续传</div>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="upload-zone" id="uploadZone">
+                <div class="upload-icon">📁</div>
+                <div class="upload-text">点击选择文件或拖拽到此处</div>
+                <div class="upload-hint">最大支持 {{MAX_FILE_SIZE_MB}}MB 文件 • 推荐测试文件：10MB+</div>
+                <input type="file" class="file-input" id="fileInput">
+            </div>
+
+            <div class="file-info" id="fileInfo">
+                <h3>📄 选中文件</h3>
+                <p><strong>文件名:</strong> <span id="fileName"></span></p>
+                <p><strong>大小:</strong> <span id="fileSize"></span></p>
+                <p><strong>类型:</strong> <span id="fileType"></span></p>
+                <p><strong>预计分块:</strong> <span id="estimatedChunks"></span></p>
+                <div style="margin-top: 15px;">
+                    <button class="btn" id="uploadBtn">开始上传</button>
+                    <button class="btn btn-secondary" id="cancelBtn" style="display: none;">取消上传</button>
+                </div>
+            </div>
+
+            <div class="progress-section" id="progressSection">
+                <div class="progress-container">
+                    <div class="progress-header">
+                        <div class="progress-title">📤 上传进度</div>
+                        <div class="progress-percentage" id="progressPercentage">0%</div>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-details">
+                        <span id="progressChunks">0 / 0 分块</span>
+                        <span id="progressSpeed">0 KB/s</span>
+                        <span id="progressTime">预计时间: --</span>
+                    </div>
+                    <div class="progress-text" id="progressText">准备中...</div>
+                </div>
+
+                <div class="stats-section">
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalChunksStat">0</div>
+                        <div class="stat-label">总分块数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="uploadedChunksStat">0</div>
+                        <div class="stat-label">已上传</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="uploadSpeedStat">0</div>
+                        <div class="stat-label">速度(KB/s)</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="timeElapsedStat">0</div>
+                        <div class="stat-label">用时(秒)</div>
+                    </div>
+                </div>
+
+                <div class="download-section" id="downloadSection">
+                    <h3>🎉 上传完成！</h3>
+                    <p style="margin: 10px 0; color: #666;">
+                        文件已成功上传并验证完整性
+                    </p>
+                    <a href="#" class="download-btn" id="downloadBtn" target="_blank">
+                        📥 下载文件
+                    </a>
+                    <button class="btn clear-btn" id="clearBtn">重新上传</button>
+                </div>
+            </div>
+
+            <div class="log-section" id="logSection"></div>
+        </div>
+    </div>
+
+    <script>
+        class AdvancedUploader {
+            constructor() {
+                this.file = null;
+                this.sessionId = null;
+                this.chunkSize = {{CHUNK_SIZE}};
+                this.eventSource = null;
+                this.uploading = false;
+                this.uploadCompleted = false;
+                this.startTime = null;
+                this.uploadedBytes = 0;
+                this.lastProgressTime = Date.now();
+                this.lastUploadedBytes = 0;
+
+                this.initEvents();
+                this.log('🚀 RAT Engine 大文件分块上传已就绪', 'info');
+            }
+
+            initEvents() {
+                const zone = document.getElementById('uploadZone');
+                const input = document.getElementById('fileInput');
+                const uploadBtn = document.getElementById('uploadBtn');
+                const cancelBtn = document.getElementById('cancelBtn');
+                const clearBtn = document.getElementById('clearBtn');
+
+                zone.onclick = () => input.click();
+
+                zone.ondragover = (e) => {
+                    e.preventDefault();
+                    zone.classList.add('dragover');
+                };
+
+                zone.ondragleave = () => zone.classList.remove('dragover');
+
+                zone.ondrop = (e) => {
+                    e.preventDefault();
+                    zone.classList.remove('dragover');
+                    this.handleFile(e.dataTransfer.files[0]);
+                };
+
+                input.onchange = (e) => this.handleFile(e.target.files[0]);
+                uploadBtn.onclick = () => this.startUpload();
+                cancelBtn.onclick = () => this.cancelUpload();
+                clearBtn.onclick = () => this.resetUpload();
+            }
+
+            handleFile(file) {
+                if (!file) return;
+
+                if (file.size > {{MAX_FILE_SIZE}}) {
+                    this.log(`❌ 文件过大：${this.formatSize(file.size)}，最大支持 {{MAX_FILE_SIZE_MB}}MB`, 'error');
+                    return;
+                }
+
+                this.file = file;
+                this.showFileInfo();
+                this.log(`📄 已选择文件：${file.name} (${this.formatSize(file.size)})`, 'info');
+            }
+
+            showFileInfo() {
+                const estimatedChunks = Math.ceil(this.file.size / this.chunkSize);
+
+                document.getElementById('fileName').textContent = this.file.name;
+                document.getElementById('fileSize').textContent = this.formatSize(this.file.size);
+                document.getElementById('fileType').textContent = this.file.type || '未知';
+                document.getElementById('estimatedChunks').textContent = `${estimatedChunks} 个分块`;
+                document.getElementById('fileInfo').style.display = 'block';
+            }
+
+            async startUpload() {
+                if (!this.file || this.uploading) return;
+
+                this.uploading = true;
+                this.uploadCompleted = false;
+                this.startTime = Date.now();
+                this.uploadedBytes = 0;
+                this.lastProgressTime = Date.now();
+                this.lastUploadedBytes = 0;
+
+                document.getElementById('uploadBtn').disabled = true;
+                document.getElementById('uploadBtn').textContent = '上传中...';
+                document.getElementById('cancelBtn').style.display = 'inline-block';
+                document.getElementById('progressSection').style.display = 'block';
+
+                try {
+                    this.log('🔍 开始计算文件哈希值...', 'info');
+                    const fileHash = await this.calculateHash(this.file);
+
+                    this.log('🚀 初始化上传会话...', 'info');
+                    const initResp = await fetch('/api/init', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            filename: this.file.name,
+                            file_size: this.file.size,
+                            file_hash: fileHash
+                        })
+                    });
+
+                    const initData = await initResp.json();
+                    if (initData.error) {
+                        throw new Error(initData.error);
+                    }
+
+                    this.sessionId = initData.session_id;
+                    this.chunkSize = initData.chunk_size;
+
+                    this.log(`✅ 会话创建成功：${this.sessionId}`, 'success');
+                    this.log(`📊 总分块数：${initData.total_chunks}`, 'info');
+
+                    // 更新统计信息
+                    document.getElementById('totalChunksStat').textContent = initData.total_chunks;
+
+                    // 开始 SSE
+                    this.startSSE();
+
+                    // 开始上传
+                    await this.uploadChunks();
+
+                } catch (error) {
+                    this.log(`❌ 上传失败：${error.message}`, 'error');
+                    this.resetUploadState();
+                }
+            }
+
+            async calculateHash(file) {
+                const buffer = await file.arrayBuffer();
+                const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            }
+
+            async uploadChunks() {
+                const totalChunks = Math.ceil(this.file.size / this.chunkSize);
+                let uploadedChunks = 0;
+
+                for (let i = 0; i < totalChunks; i++) {
+                    if (!this.uploading) break; // 检查是否被取消
+
+                    const start = i * this.chunkSize;
+                    const end = Math.min(start + this.chunkSize, this.file.size);
+                    const chunk = this.file.slice(start, end);
+
+                    try {
+                        await this.uploadChunk(i, chunk);
+                        uploadedChunks++;
+                        this.uploadedBytes += end - start;
+
+                        // 更新速度统计
+                        this.updateSpeedStats();
+
+                        // 小延迟，避免过快请求
+                        await new Promise(resolve => setTimeout(resolve, 20));
+                    } catch (error) {
+                        throw new Error(`分块 ${i + 1}/${totalChunks} 上传失败：${error.message}`);
+                    }
+                }
+            }
+
+            async uploadChunk(index, chunk) {
+                const buffer = await chunk.arrayBuffer();
+                const base64Data = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+
+                const response = await fetch('/api/chunk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: this.sessionId,
+                        chunk_index: index,
+                        chunk_data: base64Data
+                    })
+                });
+
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                return data;
+            }
+
+            updateSpeedStats() {
+                const now = Date.now();
+                const timeDiff = (now - this.lastProgressTime) / 1000; // 秒
+                const bytesDiff = this.uploadedBytes - this.lastUploadedBytes;
+
+                if (timeDiff >= 1) { // 每秒更新一次
+                    const speed = bytesDiff / timeDiff / 1024; // KB/s
+                    const elapsed = (now - this.startTime) / 1000; // 秒
+
+                    document.getElementById('uploadSpeedStat').textContent = Math.round(speed);
+                    document.getElementById('timeElapsedStat').textContent = Math.round(elapsed);
+
+                    this.lastProgressTime = now;
+                    this.lastUploadedBytes = this.uploadedBytes;
+                }
+            }
+
+            startSSE() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                }
+
+                this.eventSource = new EventSource(`/api/progress/${this.sessionId}`);
+                this.sseCompleted = false;
+
+                this.eventSource.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        this.handleSSEMessage(data);
+                    } catch (error) {
+                        console.error('SSE 解析错误:', error);
+                    }
+                };
+
+                this.eventSource.onerror = (error) => {
+                    console.error('SSE 连接错误:', error);
+                    if (!this.sseCompleted && this.uploading) {
+                        this.log('⚠️ SSE 连接中断，但上传仍在继续', 'warning');
+                    }
+                };
+
+                this.eventSource.onopen = () => {
+                    this.log('📡 SSE 连接已建立', 'success');
+                };
+            }
+
+            handleSSEMessage(data) {
+                switch (data.type) {
+                    case 'init':
+                        this.log('📡 接收初始状态', 'info');
+                        if (data.completed) {
+                            this.handleUploadComplete(data);
+                        }
+                        break;
+
+                    case 'progress':
+                        this.updateProgress(data.progress);
+                        this.updateChunkStats(data.received_chunks, data.total_chunks);
+                        this.log(`📈 上传进度：${data.received_chunks}/${data.total_chunks} 分块 (${data.progress.toFixed(1)}%)`, 'info');
+                        break;
+
+                    case 'completed':
+                        this.handleUploadComplete(data);
+                        break;
+
+                    case 'heartbeat':
+                        // 心跳，不显示
+                        break;
+
+                    default:
+                        console.log('未知SSE消息:', data);
+                }
+            }
+
+            updateProgress(percent) {
+                const progressFill = document.getElementById('progressFill');
+                const progressPercentage = document.getElementById('progressPercentage');
+                const progressText = document.getElementById('progressText');
+
+                progressFill.style.width = `${percent}%`;
+                progressPercentage.textContent = `${percent.toFixed(1)}%`;
+
+                if (percent < 100) {
+                    const remaining = this.calculateRemainingTime(percent);
+                    progressText.textContent = `上传中... 预计剩余时间：${remaining}`;
+                } else {
+                    progressText.textContent = '处理完成...';
+                }
+            }
+
+            updateChunkStats(received, total) {
+                document.getElementById('uploadedChunksStat').textContent = received;
+                document.getElementById('progressChunks').textContent = `${received} / ${total} 分块`;
+            }
+
+            calculateRemainingTime(percent) {
+                if (percent <= 0 || !this.startTime) return '--';
+
+                const elapsed = (Date.now() - this.startTime) / 1000;
+                const totalEstimated = elapsed * 100 / percent;
+                const remaining = totalEstimated - elapsed;
+
+                if (remaining < 60) return `${Math.round(remaining)}秒`;
+                if (remaining < 3600) return `${Math.round(remaining / 60)}分钟`;
+                return `${Math.round(remaining / 3600)}小时`;
+            }
+
+            handleUploadComplete(data) {
+                this.updateProgress(100);
+                this.log('🎉 文件上传完成！', 'success');
+                this.log(`📊 文件大小：${this.formatSize(data.file_size)}`, 'info');
+                this.log(`🔐 文件完整性已验证`, 'success');
+
+                this.sseCompleted = true;
+                this.uploadCompleted = true;
+                this.uploading = false;
+
+                // 显示下载区域
+                const downloadSection = document.getElementById('downloadSection');
+                const downloadBtn = document.getElementById('downloadBtn');
+                downloadSection.style.display = 'block';
+                downloadBtn.href = data.download_url;
+                downloadBtn.download = this.file.name;
+
+                // 更新进度文本
+                document.getElementById('progressText').textContent = '✅ 上传完成';
+
+                // 关闭SSE连接
+                this.closeSSE();
+
+                // 更新按钮状态
+                document.getElementById('uploadBtn').style.display = 'none';
+                document.getElementById('cancelBtn').style.display = 'none';
+            }
+
+            cancelUpload() {
+                if (this.uploading) {
+                    this.uploading = false;
+                    this.log('🛑 用户取消上传', 'warning');
+                    this.closeSSE();
+                    this.resetUploadState();
+                }
+            }
+
+            resetUpload() {
+                this.resetUploadState();
+                document.getElementById('fileInfo').style.display = 'none';
+                document.getElementById('progressSection').style.display = 'none';
+                document.getElementById('downloadSection').style.display = 'none';
+                this.file = null;
+                this.sessionId = null;
+            }
+
+            resetUploadState() {
+                this.uploading = false;
+                this.uploadCompleted = false;
+                document.getElementById('uploadBtn').disabled = false;
+                document.getElementById('uploadBtn').textContent = '开始上传';
+                document.getElementById('cancelBtn').style.display = 'none';
+                this.closeSSE();
+            }
+
+            closeSSE() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+            }
+
+            log(message, type = 'info') {
+                const logSection = document.getElementById('logSection');
+                const entry = document.createElement('div');
+                entry.className = `log-entry log-${type}`;
+                entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+                logSection.appendChild(entry);
+                logSection.scrollTop = logSection.scrollHeight;
+            }
+
+            formatSize(bytes) {
+                const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                let size = bytes;
+                let unitIndex = 0;
+
+                while (size >= 1024 && unitIndex < units.length - 1) {
+                    size /= 1024;
+                    unitIndex++;
+                }
+
+                return `${size.toFixed(1)} ${units[unitIndex]}`;
+            }
+        }
+
+        // 启动上传器
+        document.addEventListener('DOMContentLoaded', () => {
+            new AdvancedUploader();
+        });
+    </script>
+</body>
+</html>
