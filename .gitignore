@@ -80,3 +80,65 @@ LOCK
 
 # docs目录下的md文件允许
 !docs/**/*.md
+
+# 上传目录和媒体文件 - 严格防止大文件被提交
+uploads/
+**/uploads/
+upload/
+**/upload/
+*/uploads/*
+**/uploads/*
+
+# 媒体文件 - 防止音视频文件被提交
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.webm
+*.mkv
+*.wav
+*.flac
+*.aac
+*.ogg
+*.m4a
+*.m4v
+*.3gp
+*.3g2
+
+# 压缩文件 - 防止压缩包被提交
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.tar.xz
+*.txz
+*.tar.lzma
+*.tlzma
+
+# 大型二进制文件
+*.exe
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.iso
+*.img
+*.bin
+
+# 临时上传文件
+*.tmp
+*.temp
+*.part
+*.partial
+*.upload
+
+# 上传会话文件
+*session-*
+upload-session-*
+temp-upload-*
