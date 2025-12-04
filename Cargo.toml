@@ -1,6 +1,6 @@
 [package]
 name = "rat_engine"
-version = "1.1.7"
+version = "1.1.8"
 edition = "2024"
 authors = ["0ldm0s <oldmos@gmail.com>"]
 description = "高性能Rust HTTP服务器引擎，提供Flask风格的API和自动硬件优化功能"
@@ -76,7 +76,7 @@ lz4_flex = { version = "0.11", optional = true }
 brotli = { version = "3.4.0", optional = true }
 zstd = { version = "0.12", optional = true }
 # 缓存支持
-rat_memcache = { version = "0.2.3", optional = true }
+rat_memcache = { version = "0.2.4", optional = true }
 jsonwebtoken = "9.3.1"
 # 协议检测支持
 psi_detector = "0.1.3"

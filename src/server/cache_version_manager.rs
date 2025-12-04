@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicBool};
 use bytes::Bytes;
 use dashmap::DashMap;
 use crate::server::cache_middleware::CacheMiddleware;
+#[cfg(feature = "compression")]
 use crate::compression::{CompressionConfig, CompressionType, Compressor};
 use crate::cache::Cache;
 
@@ -407,6 +408,7 @@ impl CacheVersionManager {
 
         // 检查是否应该进行预压缩
         if self.should_precompress(&data) {
+            #[cfg(feature = "compression")]
             self.generate_precompressed_versions(base_key, &data, ttl).await?;
         }
 
@@ -432,10 +434,17 @@ impl CacheVersionManager {
 
         // 如果启用智能预压缩决策，进行数据分析
         if self.config.enable_smart_precompression {
-            let compression_config = CompressionConfig::new().enable_smart_compression(true);
-            if !compression_config.estimate_compressibility(data) {
-                #[cfg(feature = "compression")]
-                crate::utils::logger::debug!("🧠 [CacheVersionManager] 数据压缩性低，跳过预压缩");
+            #[cfg(feature = "compression")]
+            {
+                let compression_config = CompressionConfig::new().enable_smart_compression(true);
+                if !compression_config.estimate_compressibility(data) {
+                    crate::utils::logger::debug!("🧠 [CacheVersionManager] 数据压缩性低，跳过预压缩");
+                    return false;
+                }
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                crate::utils::logger::debug!("🧠 [CacheVersionManager] 压缩功能未启用，跳过预压缩");
                 return false;
             }
         }
@@ -444,6 +453,7 @@ impl CacheVersionManager {
     }
 
     /// 生成预压缩版本
+    #[cfg(feature = "compression")]
     async fn generate_precompressed_versions(
         &self,
         base_key: &str,
