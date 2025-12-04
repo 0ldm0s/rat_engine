@@ -353,8 +353,7 @@ impl ClientConnectionPool {
                 // 配置 ALPN 协议协商，gRPC 只支持 HTTP/2
                 ssl_builder.set_alpn_protos(b"\x02h2")
                     .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_alpn_failed", &[("msg", &e.to_string())])))?;
-                println!("[连接池ALPN调试] mTLS 模式设置 ALPN 协议: h2");
-
+  
                 ssl_builder.build()
             } else if self.config.development_mode {
                 // 开发模式：跳过证书验证，无客户端证书
@@ -366,8 +365,7 @@ impl ClientConnectionPool {
                 // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
                 ssl_builder.set_alpn_protos(b"\x02h2")
                     .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_alpn_failed", &[("msg", &e.to_string())])))?;
-                println!("[连接池ALPN调试] 开发模式设置 ALPN 协议: h2");
-
+  
                 ssl_builder.set_verify(SslVerifyMode::NONE);
 
                 // 开发模式下保持标准协议版本，仅跳过证书验证
@@ -381,8 +379,7 @@ impl ClientConnectionPool {
                 // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
                 ssl_builder.set_alpn_protos(b"\x02h2")
                     .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_alpn_failed", &[("msg", &e.to_string())])))?;
-                println!("[连接池ALPN调试] 标准模式设置 ALPN 协议: h2");
-
+    
                 ssl_builder.set_verify(SslVerifyMode::PEER);
 
                 ssl_builder.build()
@@ -392,50 +389,29 @@ impl ClientConnectionPool {
             let mut ssl = openssl::ssl::Ssl::new(&ssl_connector.context())
                 .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("create_ssl_failed", &[("msg", &e.to_string())])))?;
 
-            println!("[客户端调试] SSL 对象创建成功");
-            println!("[客户端调试] SSL 版本: {:?}", ssl.version_str());
-
-            // 调试：无法直接获取 SSL 上下文的 ALPN 配置，但可以通过其他方式验证
-            println!("[客户端调试] SSL 上下文创建完成，ALPN 配置已在 Builder 中设置");
-
-            // 调试：检查当前 SSL 对象的 ALPN 协议（握手前）
-            println!("[客户端调试] 握手前 SSL 对象的 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-
+  
             // 设置 SNI (Server Name Indication)
             ssl.set_hostname(host)
                 .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("set_sni_failed", &[("msg", &e.to_string())])))?;
-            println!("[客户端调试] SNI 主机名设置: {}", host);
-
             // 设置连接类型为客户端
             ssl.set_connect_state();
-            println!("[客户端调试] SSL 连接类型设置为客户端");
 
             let mut tls_stream = SslStream::new(ssl, tcp_stream)
                 .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("create_tls_stream_failed", &[("msg", &e.to_string())])))?;
-            println!("[客户端调试] TLS 流创建成功");
 
             // 使用异步方式完成 TLS 握手
             debug!("[客户端] 🔐 开始 TLS 握手...");
-            println!("[客户端调试] 开始 TLS 握手过程...");
             use futures_util::future::poll_fn;
             poll_fn(|cx| {
                 match std::pin::Pin::new(&mut tls_stream).poll_do_handshake(cx) {
                     std::task::Poll::Ready(Ok(())) => {
                         debug!("[客户端] ✅ TLS 握手成功");
-                        println!("[客户端调试] ✅ TLS 握手成功！");
-
-                        // 打印握手后的详细信息
-                        let ssl = tls_stream.ssl();
-                        println!("[客户端调试] 握手后 SSL 版本: {:?}", ssl.version_str());
-                        println!("[客户端调试] 握手后 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-                        println!("[客户端调试] 握手后 服务器证书: {:?}", ssl.peer_certificate());
-
+  
                         std::task::Poll::Ready(Ok(()))
                     },
                     std::task::Poll::Ready(Err(e)) => {
                         error!("[客户端] ❌ TLS 握手失败: {}", e);
-                        println!("[客户端调试] ❌ TLS 握手失败: {}", e);
-                        std::task::Poll::Ready(Err(e))
+                            std::task::Poll::Ready(Err(e))
                     },
                     std::task::Poll::Pending => std::task::Poll::Pending,
                 }

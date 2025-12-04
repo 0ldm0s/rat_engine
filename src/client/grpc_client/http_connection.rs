@@ -73,17 +73,10 @@ impl RatGrpcClient {
         poll_fn(|cx| {
             match std::pin::Pin::new(&mut ssl_stream).poll_do_handshake(cx) {
                 std::task::Poll::Ready(Ok(())) => {
-                    println!("[客户端调试] ✅ TLS 握手成功！");
-                    println!("[客户端调试] TLS 连接信息:");
-                    let ssl = ssl_stream.ssl();
-                    println!("[客户端调试]   版本: {:?}", ssl.version_str());
-                    println!("[客户端调试]   ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-                    println!("[客户端调试]   服务器证书: {:?}", ssl.peer_certificate());
-                    std::task::Poll::Ready(Ok(()))
+                         std::task::Poll::Ready(Ok(()))
                 },
                 std::task::Poll::Ready(Err(e)) => {
-                    println!("[客户端调试] ❌ TLS 握手失败: {}", e);
-                    std::task::Poll::Ready(Err(e))
+                           std::task::Poll::Ready(Err(e))
                 },
                 std::task::Poll::Pending => std::task::Poll::Pending,
             }

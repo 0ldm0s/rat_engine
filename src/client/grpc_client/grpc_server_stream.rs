@@ -251,16 +251,11 @@ impl RatGrpcClient {
                             let compression_flag = buffer[0];
                             let message_length = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]) as usize;
                             
-                            println!("DEBUG: [客户端] 解析 gRPC 消息头 - 压缩标志: {}, 消息长度: {}, 缓冲区总长度: {}", 
-                                    compression_flag, message_length, buffer.len());
-                            
+                                     
                             if buffer.len() >= 5 + message_length {
                                 let message_data = &buffer[5..5 + message_length];
                                 
-                                println!("DEBUG: [客户端] 提取消息数据，长度: {}, 前32字节: {:?}", 
-                                        message_data.len(), 
-                                        &message_data[..std::cmp::min(32, message_data.len())]);
-                                
+                                               
                                 // 检查压缩标志
                                 if compression_flag != 0 {
                                     yield Err(RatError::DeserializationError("不支持压缩的 gRPC 消息".to_string()));
@@ -293,8 +288,7 @@ impl RatGrpcClient {
                                             }
                                         }
                                         Err(e) => {
-                                            println!("DEBUG: [客户端] 反序列化 GrpcStreamMessage<Vec<u8>> 失败: {}", e);
-                                            yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_grpc_stream_message_failed", &[("msg", &e.to_string())])));
+                                                yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_grpc_stream_message_failed", &[("msg", &e.to_string())])));
                                             stream_ended = true;
                                             break;
                                         }
@@ -303,8 +297,7 @@ impl RatGrpcClient {
                                     // 策略2：对于其他类型，先尝试直接反序列化为目标类型
                                     match GrpcCodec::decode::<R>(message_data) {
                                         Ok(data) => {
-                                            println!("DEBUG: [客户端] 直接反序列化为目标类型成功！");
-                                            // 创建一个简化的流消息结构
+                                                                       // 创建一个简化的流消息结构
                                             let typed_message = GrpcStreamMessage {
                                                 id: 0, // 简化处理
                                                 stream_id: 0,
@@ -317,17 +310,12 @@ impl RatGrpcClient {
                                         }
                                         Err(_) => {
                                             // 如果直接反序列化失败，尝试反序列化为 GrpcStreamMessage<Vec<u8>>
-                                            println!("DEBUG: [客户端] 直接反序列化失败，尝试 GrpcStreamMessage 包装格式");
-                                            match GrpcCodec::decode::<GrpcStreamMessage<Vec<u8>>>(message_data) {
+                                                                                match GrpcCodec::decode::<GrpcStreamMessage<Vec<u8>>>(message_data) {
                                                 Ok(stream_message) => {
                                                     // 尝试反序列化 data 字段为目标类型 R
-                                                    println!("DEBUG: [客户端] 尝试反序列化 data 字段，数据长度: {}, 前32字节: {:?}", 
-                                                            stream_message.data.len(), 
-                                                            &stream_message.data[..std::cmp::min(32, stream_message.data.len())]);
-                                                    match GrpcCodec::decode::<R>(&stream_message.data) {
+                                                                                              match GrpcCodec::decode::<R>(&stream_message.data) {
                                                         Ok(data) => {
-                                                            println!("DEBUG: [客户端] 反序列化成功！");
-                                                            let typed_message = GrpcStreamMessage {
+                                                                                                                let typed_message = GrpcStreamMessage {
                                                                 id: stream_message.id,
                                                                 stream_id: stream_message.stream_id,
                                                                 sequence: stream_message.sequence,
@@ -344,16 +332,14 @@ impl RatGrpcClient {
                                                             }
                                                         }
                                                         Err(e) => {
-                                                            println!("DEBUG: [客户端] 反序列化 data 字段失败: {}", e);
-                                                            yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_data_field_failed", &[("msg", &e.to_string())])));
+                                                                                                                      yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_data_field_failed", &[("msg", &e.to_string())])));
                                                             stream_ended = true;
                                                             break;
                                                         }
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    println!("DEBUG: [客户端] 反序列化 GrpcStreamMessage 失败: {}", e);
-                                                    yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_grpc_stream_message_failed", &[("msg", &e.to_string())])));
+                                                                                                   yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_grpc_stream_message_failed", &[("msg", &e.to_string())])));
                                                     stream_ended = true;
                                                     break;
                                                 }
