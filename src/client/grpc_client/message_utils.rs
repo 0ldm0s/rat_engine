@@ -52,18 +52,7 @@ impl RatGrpcClient {
         
         let compressed = data[0] != 0;
         let length = u32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
-        
-        // 添加详细的调试日志
-        eprintln!("=== DEBUG: [客户端] 解析 gRPC 消息: 总长度={} bytes, 压缩标志={}, 声明长度={} bytes ===", 
-                 data.len(), compressed, length);
-        eprintln!("=== DEBUG: [客户端] 消息头部字节: {:?} ===", &data[..std::cmp::min(10, data.len())]);
-        println!("DEBUG: [客户端] 解析 gRPC 消息: 总长度={} bytes, 压缩标志={}, 声明长度={} bytes", 
-                 data.len(), compressed, length);
-        println!("DEBUG: [客户端] 消息头部字节: {:?}", &data[..std::cmp::min(10, data.len())]);
-        info!("🔍 [客户端] 解析 gRPC 消息: 总长度={} bytes, 压缩标志={}, 声明长度={} bytes", 
-                         data.len(), compressed, length);
-        info!("🔍 [客户端] 消息头部字节: {:?}", &data[..std::cmp::min(10, data.len())]);
-        
+  
         // 添加合理的长度限制，防止容量溢出（最大 100MB）
         const MAX_MESSAGE_SIZE: usize = 100 * 1024 * 1024;
         if length > MAX_MESSAGE_SIZE {
@@ -204,25 +193,13 @@ impl RatGrpcClient {
         let message_data = GrpcCodec::parse_frame(&body_bytes)
             .map_err(|e| RatError::DecodingError(rat_embed_lang::tf("parse_grpc_frame_failed", &[("msg", &e.to_string())])))?;
 
-        // 添加反序列化前的调试信息
-        eprintln!("=== DEBUG: [客户端] 准备反序列化响应数据，数据大小: {} bytes ===", message_data.len());
-        eprintln!("=== DEBUG: [客户端] 反序列化数据前32字节: {:?} ===", &message_data[..std::cmp::min(32, message_data.len())]);
-        println!("DEBUG: [客户端] 准备反序列化响应数据，数据大小: {} bytes", message_data.len());
-        println!("DEBUG: [客户端] 反序列化数据前32字节: {:?}", &message_data[..std::cmp::min(32, message_data.len())]);
-        info!("🔍 [客户端] 准备反序列化响应数据，数据大小: {} bytes", message_data.len());
-        info!("🔍 [客户端] 反序列化数据前32字节: {:?}", &message_data[..std::cmp::min(32, message_data.len())]);
-
-        eprintln!("=== DEBUG: [客户端] 开始使用 GrpcCodec 反序列化 ===");
-        // 直接反序列化为最终的 R 类型，因为服务端现在发送完整的 GrpcResponse 结构
+          // 直接反序列化为最终的 R 类型，因为服务端现在发送完整的 GrpcResponse 结构
         let response_data: R = GrpcCodec::decode(message_data)
             .map_err(|e| {
-                eprintln!("=== DEBUG: [客户端] GrpcCodec 反序列化最终数据类型失败: {} ===", e);
-                println!("DEBUG: [客户端] GrpcCodec 反序列化最终数据类型失败: {}", e);
                 error!("❌ [客户端] GrpcCodec 反序列化最终数据类型失败: {}", e);
                 RatError::DeserializationError(rat_embed_lang::tf("deserialize_data_type_failed", &[("msg", &e.to_string())]))
             })?;
-        eprintln!("=== DEBUG: [客户端] 最终数据类型反序列化成功 ===");
-
+  
         // 构建默认的 GrpcResponse 结构，因为我们只收到了实际数据
         let grpc_response = GrpcResponse {
             status: 0, // OK
