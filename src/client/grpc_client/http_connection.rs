@@ -17,7 +17,13 @@ use tokio::time::timeout;
 use futures_util::future;
 
 use crate::error::{RatError, RatResult};
+#[cfg(feature = "compression")]
 use crate::compression::{CompressionType, CompressionConfig};
+#[cfg(not(feature = "compression"))]
+use crate::client::grpc_builder::CompressionConfig;
+
+#[cfg(not(feature = "compression"))]
+type CompressionType = (); // 空类型，在未启用compression时不会被实际使用
 use crate::utils::logger::{info, warn, debug, error};
 use openssl::ssl::{SslConnector, SslMethod};
 use tokio_openssl::SslStream;
@@ -28,17 +34,31 @@ impl RatGrpcClient {
         let is_https = uri.scheme_str() == Some("https");
         let host = uri.host().ok_or_else(|| RatError::RequestError("URI 缺少主机".to_string()))?;
         let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
-        let addr = format!("{}:{}", host, port);
-        
-        debug!("🔗 建立 H2 连接: {} ({})", addr, if is_https { "HTTPS" } else { "H2C" });
+        // 检查是否需要使用预解析IP
+        let resolved_addr = if let Some(ref dns_mapping) = self.dns_mapping {
+            if let Some(resolved_ip) = dns_mapping.get(host) {
+                let addr = format!("{}:{}", resolved_ip, port);
+                debug!("🔗 建立 H2 连接: {} (使用预解析IP: {} -> {}) ({})",
+                    addr, host, resolved_ip, if is_https { "HTTPS" } else { "H2C" });
+                addr
+            } else {
+                let addr = format!("{}:{}", host, port);
+                debug!("🔗 建立 H2 连接: {} ({})", addr, if is_https { "HTTPS" } else { "H2C" });
+                addr
+            }
+        } else {
+            let addr = format!("{}:{}", host, port);
+            debug!("🔗 建立 H2 连接: {} ({})", addr, if is_https { "HTTPS" } else { "H2C" });
+            addr
+        };
         
         // 建立 TCP 连接
-        let tcp_stream = timeout(self.connect_timeout, tokio::net::TcpStream::connect(&addr))
+        let tcp_stream = timeout(self.connect_timeout, tokio::net::TcpStream::connect(&resolved_addr))
             .await
-            .map_err(|_| RatError::TimeoutError(rat_embed_lang::tf("h2_tcp_connection_timeout", &[("msg", &addr.to_string())])))?
+            .map_err(|_| RatError::TimeoutError(rat_embed_lang::tf("h2_tcp_connection_timeout", &[("msg", &resolved_addr.to_string())])))?
             .map_err(|e| RatError::NetworkError(rat_embed_lang::tf("h2_tcp_connection_failed", &[("msg", &e.to_string())])))?;
         
-        debug!("✅ H2 TCP 连接已建立: {}", addr);
+        debug!("✅ H2 TCP 连接已建立: {}", resolved_addr);
         
         // 根据协议类型进行握手
         let client = if is_https {
@@ -112,7 +132,7 @@ impl RatGrpcClient {
             client
         };
         
-        debug!("🚀 H2 连接建立完成: {}", addr);
+        debug!("🚀 H2 连接建立完成: {}", resolved_addr);
         Ok(client)
     }
 

@@ -15,7 +15,10 @@ use http_body_util::{Full, BodyExt};
 use hyper::body::Bytes;
 
 use crate::error::{RatError, RatResult};
+#[cfg(feature = "compression")]
 use crate::compression::{CompressionType, CompressionConfig};
+#[cfg(not(feature = "compression"))]
+use crate::client::grpc_builder::CompressionConfig;
 use crate::server::grpc_types::{GrpcRequest, GrpcResponse};
 use crate::server::grpc_codec::GrpcCodec;
 use crate::client::connection_pool::{ClientConnectionPool, ConnectionPoolConfig};
@@ -56,6 +59,7 @@ impl RatGrpcClient {
         compression_mode: GrpcCompressionMode,
         development_mode: bool,
         mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
+        dns_mapping: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
         // 创建连接池配置
         let pool_config = ConnectionPoolConfig {
@@ -94,6 +98,7 @@ impl RatGrpcClient {
             delegated_manager,
             development_mode,
             mtls_config,
+            dns_mapping,
         }
     }
 

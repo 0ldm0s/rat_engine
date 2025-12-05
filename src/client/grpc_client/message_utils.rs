@@ -10,7 +10,10 @@ use serde::{Serialize, Deserialize};
 use bincode;
 
 use crate::error::{RatError, RatResult};
+#[cfg(feature = "compression")]
 use crate::compression::{CompressionType, CompressionConfig};
+#[cfg(not(feature = "compression"))]
+use crate::client::grpc_builder::CompressionConfig;
 use crate::server::grpc_types::{GrpcResponse, GrpcStreamMessage};
 use crate::server::grpc_codec::GrpcCodec;
 use crate::client::grpc_client_delegated::ClientStreamContext;

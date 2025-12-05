@@ -11,7 +11,10 @@ use hyper_util::rt::TokioExecutor;
 use http_body_util::Full;
 use hyper::body::Bytes;
 
+#[cfg(feature = "compression")]
 use crate::compression::CompressionConfig;
+#[cfg(not(feature = "compression"))]
+use crate::client::grpc_builder::CompressionConfig;
 use crate::client::connection_pool::ClientConnectionPool;
 use crate::client::grpc_builder::MtlsClientConfig;
 use crate::client::grpc_client_delegated::ClientBidirectionalManager;
@@ -64,6 +67,8 @@ pub struct RatGrpcClient {
     pub development_mode: bool,
     /// mTLS 客户端配置
     pub mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
+    /// DNS解析映射表（域名 -> 预解析IP）
+    pub dns_mapping: Option<std::collections::HashMap<String, String>>,
 }
 
 impl Clone for RatGrpcClient {
@@ -96,6 +101,7 @@ impl Clone for RatGrpcClient {
                     ca_cert_path: config.ca_cert_path.clone(),
                 }
             }),
+            dns_mapping: self.dns_mapping.clone(),
         }
     }
 }

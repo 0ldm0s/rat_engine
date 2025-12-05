@@ -14,6 +14,16 @@ use crate::client::grpc_client::{RatGrpcClient, GrpcCompressionMode};
 use openssl::pkey::{PKey, Private};
 use openssl::x509::X509;
 use std::sync::Arc;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::collections::HashMap;
+
+/// 默认压缩配置（在compression特性未启用时使用）
+#[derive(Debug, Clone)]
+pub struct CompressionConfig {
+    enabled: bool,
+    min_size: usize,
+    level: u32,
+}
 
 /// mTLS 客户端配置
 #[derive(Debug)]
@@ -75,6 +85,8 @@ pub struct RatGrpcClientBuilder {
     development_mode: Option<bool>,
     /// mTLS 配置
     mtls_config: Option<MtlsClientConfig>,
+    /// DNS解析映射表（域名 -> 预解析IP）
+    dns_mapping: Option<std::collections::HashMap<String, String>>,
 }
 
 impl RatGrpcClientBuilder {
@@ -91,6 +103,7 @@ impl RatGrpcClientBuilder {
             compression_mode: None,
             development_mode: None,
             mtls_config: None,
+            dns_mapping: None,
         }
     }
 
@@ -290,6 +303,44 @@ impl RatGrpcClientBuilder {
         self.with_mtls(client_cert_chain, client_private_key, None, true, server_name, client_cert_path, client_key_path, None)
     }
 
+    /// 配置 DNS 预解析映射
+    ///
+    /// 允许将域名映射到预解析的IP地址，避免DNS解析延迟
+    ///
+    /// # 参数
+    /// - `mapping`: 域名到IP地址的映射表
+    ///
+    /// # 示例
+    /// ```
+    /// let mut dns_map = HashMap::new();
+    /// dns_map.insert("api.example.com".to_string(), "192.168.1.100".to_string());
+    /// dns_map.insert("service.example.com".to_string(), "10.0.0.50".to_string());
+    /// ```
+    ///
+    /// # 返回值
+    /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
+    pub fn with_dns_mapping(
+        mut self,
+        mapping: HashMap<String, String>,
+    ) -> RatResult<Self> {
+        // 验证IP地址格式
+        for (domain, ip) in &mapping {
+            if domain.is_empty() {
+                return Err(RatError::RequestError("DNS映射中的域名不能为空".to_string()));
+            }
+            if ip.is_empty() {
+                return Err(RatError::RequestError(format!("DNS映射中域名 '{}' 的IP地址不能为空", domain)));
+            }
+            // 简单验证IPv4或IPv6格式
+            if !is_valid_ip_address(ip) {
+                return Err(RatError::RequestError(format!("DNS映射中域名 '{}' 的IP '{}' 格式无效", domain, ip)));
+            }
+        }
+
+        self.dns_mapping = Some(mapping);
+        Ok(self)
+    }
+
     /// 构建 gRPC 客户端实例
     /// 
     /// # 错误
@@ -356,8 +407,13 @@ impl RatGrpcClientBuilder {
             }
             #[cfg(not(feature = "compression"))]
             {
-                crate::compression::CompressionConfig::new()
-                    .enable_compression(false)
+                // 当compression特性未启用时，创建一个默认配置
+                // 使用默认值，因为在没有compression特性的情况下这些配置不会被使用
+                CompressionConfig {
+                    enabled: false,
+                    min_size: 1024,
+                    level: 1,
+                }
             }
         };
 
@@ -374,8 +430,15 @@ impl RatGrpcClientBuilder {
             compression_mode,
             development_mode,
             self.mtls_config,
+            self.dns_mapping,
         ))
     }
+}
+
+/// 验证IP地址格式是否有效
+fn is_valid_ip_address(ip: &str) -> bool {
+    // 尝试解析为IPv4或IPv6地址
+    ip.parse::<IpAddr>().is_ok()
 }
 
 impl Default for RatGrpcClientBuilder {
