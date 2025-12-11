@@ -738,6 +738,10 @@ pub struct Router {
     // HTTP/2 支持
     h2_enabled: bool,
     h2c_enabled: bool,
+
+    // HEAD 请求回退到 GET 的配置
+    head_fallback_enabled: bool,
+    head_fallback_whitelist: Option<HashSet<String>>,
 }
 
 impl Router {
@@ -763,6 +767,8 @@ impl Router {
             cert_manager: None,
             h2_enabled: false,
             h2c_enabled: false,
+            head_fallback_enabled: false,
+            head_fallback_whitelist: None,
         }
     }
 
@@ -1116,6 +1122,93 @@ impl Router {
 
                 // 递归调用路由处理，标记为 SPA 回退以避免无限递归
                 return Box::pin(self.route_and_handle_internal(fallback_req, true)).await;
+            }
+        }
+
+        // HEAD 请求回退到 GET 处理器
+        if method == hyper::Method::HEAD && self.head_fallback_enabled {
+            // 检查是否在白名单中（如果配置了白名单）
+            if let Some(whitelist) = &self.head_fallback_whitelist {
+                let path_normalized = path.trim_end_matches('/');
+                let is_whitelisted = whitelist.iter().any(|whitelisted_path| {
+                    let whitelisted = whitelisted_path.trim_end_matches('/');
+                    // 精确匹配或前缀匹配
+                    path_normalized == whitelisted || path_normalized.starts_with(&format!("{}/", whitelisted))
+                });
+
+                if !is_whitelisted {
+                    crate::utils::logger::debug!("🔍 [Router] HEAD 请求路径不在白名单中: {}", path);
+                } else {
+                    // 尝试查找对应的 GET 路由
+                    crate::utils::logger::debug!("🔍 [Router] HEAD 回退: 尝试匹配 GET 路由 {}", path);
+                    let get_matches = self.route_tree.find_routes(&hyper::Method::GET, &path);
+
+                    if !get_matches.is_empty() {
+                        let get_match = &get_matches[0]; // 已按优先级排序
+                        crate::utils::logger::info!("✅ [Router] HEAD 回退成功: {} -> GET {}", path, get_match.route_info.pattern);
+
+                        // 创建 GET 请求来复用处理器
+                        let mut get_req = req.clone();
+                        get_req.method = hyper::Method::GET;
+
+                        // 使用 GET 处理器，但标记为 HEAD 请求以优化性能
+                        if get_match.route_info.handler_id < self.http_handlers.len() {
+                            let handler = &self.http_handlers[get_match.route_info.handler_id];
+                            let req_with_params = Self::set_path_params_and_handler_to_request(
+                                get_req,
+                                get_match.params.clone(),
+                                get_match.route_info.python_handler_name.clone()
+                            );
+
+                            // 调用 GET 处理器但立即丢弃响应体，只保留头部
+                            let response = handler(req_with_params).await?;
+                            let (parts, _body) = response.into_parts();
+
+                            // 创建空的响应体
+                            let empty_body = BoxBody::new(
+                                http_body_util::Full::new(Bytes::new())
+                                    .map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} })
+                            );
+
+                            let head_response = Response::from_parts(parts, empty_body);
+
+                            // 应用 CORS 头部
+                            return Ok(self.apply_cors_headers(head_response, &req));
+                        }
+                    }
+                }
+            } else {
+                // 没有白名单限制，对所有路径尝试回退
+                crate::utils::logger::debug!("🔍 [Router] HEAD 回退: 尝试匹配 GET 路由 {}", path);
+                let get_matches = self.route_tree.find_routes(&hyper::Method::GET, &path);
+
+                if !get_matches.is_empty() {
+                    let get_match = &get_matches[0];
+                    crate::utils::logger::info!("✅ [Router] HEAD 回退成功: {} -> GET {}", path, get_match.route_info.pattern);
+
+                    let mut get_req = req.clone();
+                    get_req.method = hyper::Method::GET;
+
+                    if get_match.route_info.handler_id < self.http_handlers.len() {
+                        let handler = &self.http_handlers[get_match.route_info.handler_id];
+                        let req_with_params = Self::set_path_params_and_handler_to_request(
+                            get_req,
+                            get_match.params.clone(),
+                            get_match.route_info.python_handler_name.clone()
+                        );
+
+                        let response = handler(req_with_params).await?;
+                        let (parts, _body) = response.into_parts();
+
+                        let empty_body = BoxBody::new(
+                            http_body_util::Full::new(Bytes::new())
+                                .map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} })
+                        );
+
+                        let head_response = Response::from_parts(parts, empty_body);
+                        return Ok(self.apply_cors_headers(head_response, &req));
+                    }
+                }
             }
         }
 
@@ -1633,6 +1726,28 @@ impl Router {
     /// 启用协议检测
     pub fn enable_protocol_detection(&mut self, middleware: Arc<crate::server::protocol_detection_middleware::ProtocolDetectionMiddleware>) -> &mut Self {
         self.protocol_detection_middleware = Some(middleware);
+        self
+    }
+
+    /// 启用 HEAD 请求回退到 GET 处理器
+    ///
+    /// # 参数
+    /// - `enabled`: 是否启用回退
+    /// - `whitelist`: 可选的路径白名单，如果提供则只对白名单内的路径启用回退
+    ///   支持前缀匹配，如 "/api/public" 会匹配 "/api/public" 和 "/api/public/users"
+    ///
+    /// # 示例
+    /// ```rust
+    /// // 启用所有路径的 HEAD 回退
+    /// router.enable_head_fallback(true, None);
+    ///
+    /// // 仅对特定路径启用 HEAD 回退
+    /// let whitelist = HashSet::from(["/api".to_string(), "/static".to_string()]);
+    /// router.enable_head_fallback(true, Some(whitelist));
+    /// ```
+    pub fn enable_head_fallback(&mut self, enabled: bool, whitelist: Option<HashSet<String>>) -> &mut Self {
+        self.head_fallback_enabled = enabled;
+        self.head_fallback_whitelist = whitelist;
         self
     }
 
