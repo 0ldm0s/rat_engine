@@ -262,8 +262,9 @@ impl RatEngineMetricsWindow {
 
 impl MetricsWindow for RatEngineMetricsWindow {
     fn add_sample(&mut self, rtt: Duration, loss_rate: f64, bandwidth: u64) {
-        let mut samples = self.samples.write().unwrap();
-        
+        let mut samples = self.samples.write()
+            .expect("获取写锁失败：样本窗口可能被污染");
+
         // 添加新样本
         samples.push_back((rtt, loss_rate, bandwidth));
         
@@ -277,7 +278,8 @@ impl MetricsWindow for RatEngineMetricsWindow {
     }
     
     fn avg_rtt(&self) -> Duration {
-        let samples = self.samples.read().unwrap();
+        let samples = self.samples.read()
+            .expect("获取读锁失败：样本窗口可能被污染");
         if samples.is_empty() {
             return Duration::from_millis(50);
         }
@@ -287,7 +289,8 @@ impl MetricsWindow for RatEngineMetricsWindow {
     }
     
     fn avg_loss_rate(&self) -> f64 {
-        let samples = self.samples.read().unwrap();
+        let samples = self.samples.read()
+            .expect("获取读锁失败：样本窗口可能被污染");
         if samples.is_empty() {
             return 0.0;
         }
@@ -296,7 +299,8 @@ impl MetricsWindow for RatEngineMetricsWindow {
     }
     
     fn avg_bandwidth(&self) -> u64 {
-        let samples = self.samples.read().unwrap();
+        let samples = self.samples.read()
+            .expect("获取读锁失败：样本窗口可能被污染");
         if samples.is_empty() {
             return 1_000_000; // 默认 1Mbps
         }
@@ -305,7 +309,8 @@ impl MetricsWindow for RatEngineMetricsWindow {
     }
     
     fn rtt_coefficient_of_variation(&self) -> Option<f64> {
-        let samples = self.samples.read().unwrap();
+        let samples = self.samples.read()
+            .expect("获取读锁失败：样本窗口可能被污染");
         if samples.len() < 2 {
             return None;
         }
@@ -332,7 +337,8 @@ impl MetricsWindow for RatEngineMetricsWindow {
     }
     
     fn clear(&mut self) {
-        let mut samples = self.samples.write().unwrap();
+        let mut samples = self.samples.write()
+            .expect("获取写锁失败：样本窗口可能被污染");
         samples.clear();
         debug!("指标窗口已清空");
     }

@@ -375,7 +375,7 @@ mod tests {
         let buffer = ZeroCopyBuffer::new(1024);
         let headers_data = b"GET /api/test?param=value HTTP/1.1\r\n";
         
-        let (method, path, query) = buffer.parse_request_line(headers_data).unwrap();
+        let (method, path, query) = buffer.parse_request_line(headers_data).expect("解析请求行失败");
         
         assert_eq!(method, "GET");
         assert_eq!(path, "/api/test");
@@ -387,7 +387,7 @@ mod tests {
         let buffer = ZeroCopyBuffer::new(1024);
         let headers_data = b"GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n";
         
-        let headers = buffer.parse_headers(headers_data).unwrap();
+        let headers = buffer.parse_headers(headers_data).expect("解析请求头失败");
         
         assert_eq!(headers.get("host"), Some(&"example.com".to_string()));
         assert_eq!(headers.get("user-agent"), Some(&"test".to_string()));

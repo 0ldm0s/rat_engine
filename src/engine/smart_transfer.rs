@@ -214,7 +214,9 @@ impl SmartTransferManager {
 
     /// 获取性能统计
     pub fn get_performance_stats(&self) -> PerformanceStats {
-        self.stats.lock().unwrap().clone()
+        self.stats.lock()
+            .expect("获取统计锁失败")
+            .clone()
     }
 
     /// 重置统计信息

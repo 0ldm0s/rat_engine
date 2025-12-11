@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use regex::Regex;
 use crate::utils::logger::{debug, info, warn, error};
+use crate::error::RatError;
 
 /// 参数类型定义
 #[derive(Debug, Clone, PartialEq)]
@@ -71,7 +72,8 @@ pub fn compile_pattern(pattern: &str) -> Option<(Regex, Vec<String>)> {
     let mut param_names = Vec::new();
     let mut regex_pattern = pattern.to_string();
 
-    let param_regex = Regex::new(r"<([^>]+)>").unwrap();
+    let param_regex = Regex::new(r"<([^>]+)>")
+        .map_err(|e| RatError::ConfigError(format!("编译参数正则失败: {}", e))).ok()?;
 
     regex_pattern = param_regex.replace_all(&regex_pattern, |caps: &regex::Captures| {
         let param_def = &caps[1];
@@ -105,7 +107,8 @@ pub fn compile_pattern(pattern: &str) -> Option<(Regex, Vec<String>)> {
 
 /// 从模式定义中解析参数类型
 pub fn parse_param_type_from_pattern(pattern: &str, param_name: &str) -> ParamType {
-    let param_regex = Regex::new(r"<([^>]+)>").unwrap();
+    let param_regex = Regex::new(r"<([^>]+)>")
+        .expect("参数正则表达式应该始终有效: r\"<([^>]+)>\"");
 
     if let Some(caps) = param_regex.captures(pattern) {
         let param_def = &caps[1];

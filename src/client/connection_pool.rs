@@ -281,7 +281,10 @@ impl ClientConnectionPool {
         use tokio_openssl::SslStream;
 
         let connection_id = self.connection_id_counter.fetch_add(1, Ordering::Relaxed).to_string();
-        let target_key = format!("{}://{}", target_uri.scheme_str().unwrap_or("http"), target_uri.authority().unwrap());
+        let target_key = format!("{}://{}",
+            target_uri.scheme_str().unwrap_or("http"),
+            target_uri.authority().ok_or_else(|| RatError::NetworkError("缺少目标URI的authority".to_string()))?
+        );
 
         // 建立 TCP 连接
         let host = target_uri.host().ok_or_else(|| RatError::NetworkError("无效的主机地址".to_string()))?;
@@ -505,9 +508,9 @@ impl ClientConnectionPool {
     /// 移除连接
     pub fn remove_connection(&self, connection_id: &str) {
         if let Some((_, connection)) = self.connections.remove(connection_id) {
-            let target_key = format!("{}://{}", 
-                connection.target_uri.scheme_str().unwrap_or("http"), 
-                connection.target_uri.authority().unwrap()
+            let target_key = format!("{}://{}",
+                connection.target_uri.scheme_str().unwrap_or("http"),
+                connection.target_uri.authority().map(|a| a.as_str()).unwrap_or("<missing-authority>")
             );
 
             // 从目标连接映射中移除
@@ -544,9 +547,9 @@ impl ClientConnectionPool {
 
             for connection_id in expired_connections {
                 if let Some((_, connection)) = connections.remove(&connection_id) {
-                    let target_key = format!("{}://{}", 
-                        connection.target_uri.scheme_str().unwrap_or("http"), 
-                        connection.target_uri.authority().unwrap()
+                    let target_key = format!("{}://{}",
+                        connection.target_uri.scheme_str().unwrap_or("http"),
+                        connection.target_uri.authority().map(|a| a.as_str()).unwrap_or("<missing-authority>")
                     );
 
                     // 从目标连接映射中移除

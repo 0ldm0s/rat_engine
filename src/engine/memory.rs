@@ -378,15 +378,15 @@ impl PooledBuffer {
     }
     
     pub fn get_mut(&mut self) -> &mut BytesMut {
-        self.buffer.as_mut().unwrap()
+        self.buffer.as_mut().expect("池化缓冲区为空：可能已被其他线程借用")
     }
     
     pub fn get(&self) -> &BytesMut {
-        self.buffer.as_ref().unwrap()
+        self.buffer.as_ref().expect("池化缓冲区为空：可能已被其他线程借用")
     }
     
     pub fn take(mut self) -> BytesMut {
-        self.buffer.take().unwrap()
+        self.buffer.take().expect("池化缓冲区为空：可能已被其他线程借用")
     }
 }
 
