@@ -3,7 +3,7 @@
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
 [![Crates.io](https://img.shields.io/crates/v/rat_engine.svg)](https://crates.io/crates/rat_engine)
 [![docs.rs](https://img.shields.io/docsrs/rat_engine)](https://docs.rs/rat_engine/latest/rat_engine/)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey.svg)](https://github.com/0ldm0s/rat_engine)
 
 高性能的 Rust HTTP 服务器引擎核心库，专注于提供高效的异步网络处理和系统优化功能。
@@ -29,6 +29,7 @@
 - 🚀 **高性能**: 基于 Tokio 和 Hyper 的异步架构
 - 🔧 **硬件自适应**: 自动检测 CPU 核心数并优化线程配置
 - 🛣️ **灵活路由**: 支持 HTTP 方法和路径的精确匹配，**自动路径参数提取**
+- 🔄 **HEAD 回退**: 自动将 HEAD 请求回退到 GET 处理器（可配置白名单）
 - 📡 **SSE 支持**: 全局 Server-Sent Events 管理器，支持实时通信和连接管理
 - 📊 **内置监控**: 请求日志、性能指标、健康检查
 - ⚡ **工作窃取**: 高效的任务调度和负载均衡算法
@@ -164,20 +165,19 @@ cargo build --release --features static-openssl
 #### 使用构建器模式（唯一推荐方式）
 
 ```rust
-use rat_engine::{RatEngine, Router, Method};
-use hyper::{Request, Response, StatusCode};
-use hyper::body::Incoming;
-use http_body_util::Full;
-use hyper::body::Bytes;
+use rat_engine::{RatEngine, Router, Method, Response, StatusCode, Full, Bytes};
+use rat_engine::server::http_request::HttpRequest;
 use std::sync::Arc;
+use std::pin::Pin;
+use std::future::Future;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建路由器并添加路由
     let mut router = Router::new();
-    
+
     // 添加 Hello World 路由
-    router.add_route(Method::GET, "/hello", Arc::new(|_req: Request<Incoming>| {
+    router.add_route(Method::GET, "/hello", |_req: HttpRequest| {
         Box::pin(async {
             Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -185,22 +185,135 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .body(Full::new(Bytes::from(r#"{"message":"Hello, World!"}"#)))
                 .unwrap())
         })
-    }));
-    
+    });
+
     // 使用构建器创建引擎（唯一正确的入口）
     let engine = RatEngine::builder()
         .worker_threads(4)
         .router(router)
         .build()?;
-    
+
     // 启动服务器
     engine.start("127.0.0.1".to_string(), 8080).await?;
-    
+
     Ok(())
 }
 ```
 
 **重要说明**: RatEngine 结构体本身是一个空实现，所有功能必须通过 `RatEngine::builder()` 创建构建器来访问。
+
+### HEAD 请求自动回退机制
+
+RAT Engine 支持 **HEAD 请求自动回退到 GET 处理器** 的功能，这是 HTTP/1.1 规范的最佳实践：
+
+#### 功能特点
+- **自动回退**: 当没有显式定义 HEAD 路由时，自动使用对应的 GET 处理器
+- **安全控制**: 可配置白名单，限制哪些路径允许 HEAD 回退
+- **性能优化**: 无需为每个 GET 路由手动添加对应的 HEAD 路由
+- **兼容性**: 显式定义的 HEAD 路由优先级高于自动回退
+
+#### 使用示例
+```rust
+use rat_engine::{RatEngine, Router, Method, Response, StatusCode, Full, Bytes};
+use rat_engine::server::http_request::HttpRequest;
+use std::collections::HashSet;
+use std::pin::Pin;
+use std::future::Future;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut router = Router::new();
+
+    // 添加 GET 路由
+    router.add_route(Method::GET, "/api/users", |_req: HttpRequest| {
+        Box::pin(async {
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(Full::new(Bytes::from(r#"{"users":[]}"#)))
+                .unwrap())
+        })
+    });
+
+    // 配置 HEAD 回退功能
+    let mut whitelist = HashSet::new();
+    whitelist.insert("/api".to_string());  // 只允许 /api 路径使用 HEAD 回退
+
+    // 启用 HEAD 回退，但限制在白名单内
+    router.enable_head_fallback(true, Some(whitelist));
+
+    let engine = RatEngine::builder()
+        .router(router)
+        .build()?;
+
+    engine.start("127.0.0.1".to_string(), 8080).await?;
+    Ok(())
+}
+```
+
+#### 测试命令
+```bash
+# HEAD 请求会自动回退到 GET 处理器
+curl -I http://127.0.0.1:8080/api/users
+
+# 等价于
+curl -X GET http://127.0.0.1:8080/api/users
+```
+
+#### 安全说明
+- **白名单机制**: 默认情况下，HEAD 回退是启用的但没有限制
+- **建议配置**: 在生产环境中，建议通过白名单明确指定允许 HEAD 回退的路径
+- **显式路由**: 如果需要特殊处理，可以显式定义 HEAD 路由，它会覆盖自动回退
+
+📖 **完整示例**: `examples/head_fallback_demo.rs`
+
+### 特性系统
+
+项目使用Cargo特性进行功能模块化：
+
+#### 默认特性
+- `tls`: TLS/SSL支持（默认启用），支持HTTP/2和gRPC
+
+#### 客户端功能
+- `client`: 组合特性，包含HTTP和gRPC客户端功能
+- `grpc-client`: 仅gRPC客户端功能
+- `reqwest`: 独立HTTP客户端支持
+
+#### 缓存功能
+- `cache`: L1内存缓存
+- `cache-full`: L1+L2缓存（包含持久化存储）
+
+#### 压缩功能
+- `compression`: 基础压缩（gzip + lz4）
+- `compression-full`: 完整压缩（包含 brotli + zstd）
+- `compression-br`: 基础压缩 + Brotli
+- `compression-zstd`: 基础压缩 + Zstd
+
+#### 证书和安全
+- `acme`: ACME自动证书申请
+- `static-openssl`: 静态编译OpenSSL（避免运行时依赖）
+
+#### Python绑定
+- `python`: Python绑定支持（需要PyO3）
+
+#### 其他
+- `full`: 包含所有可选特性（client、cache-full、compression-full、acme）
+- `dev`: 开发环境特性（空特性组）
+
+#### 特性组合示例
+```bash
+# 启用缓存和压缩
+cargo build --features cache,compression
+
+# 启用所有功能
+cargo build --features full
+
+# Python绑定开发
+cargo build --features python
+
+# 静态编译（避免运行时依赖）
+cargo build --release --features static-openssl
+```
 
 ### 路径参数支持
 
@@ -212,10 +325,51 @@ RAT Engine 支持强大的路径参数自动提取功能，支持多种参数类
 - **路径**: `<path:file_path>` - 可包含斜杠的完整路径
 
 使用便捷的 API 自动提取参数，无需手动解析：
+
+#### 完整示例
 ```rust
-let user_id = req.param_as_i64("id").unwrap_or(0);
-let user_uuid = req.param("uuid").unwrap_or("default");
-let price = req.param_as_f64("price").unwrap_or(0.0);
+use rat_engine::{RatEngine, Router, Method, Response, StatusCode, Full, Bytes};
+use rat_engine::server::http_request::HttpRequest;
+use std::pin::Pin;
+use std::future::Future;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut router = Router::new();
+
+    // 添加带有路径参数的路由
+    router.add_route(Method::GET, "/users/<id>/posts/<post_id>", |req: HttpRequest| {
+        Box::pin(async move {
+            // 提取路径参数
+            let user_id = req.param_as_i64("id").unwrap_or(0);
+            let post_id = req.param_as_i64("post_id").unwrap_or(0);
+
+            let response_data = format!(r#"{{"user_id": {}, "post_id": {}}}"#, user_id, post_id);
+
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(Full::new(Bytes::from(response_data)))
+                .unwrap())
+        })
+    });
+
+    let engine = RatEngine::builder()
+        .router(router)
+        .build()?;
+
+    engine.start("127.0.0.1".to_string(), 8080).await?;
+    Ok(())
+}
+```
+
+#### 参数提取方法
+```rust
+// 在路由处理器内部使用这些方法
+let user_id = req.param_as_i64("id").unwrap_or(0);          // 获取整数参数
+let user_uuid = req.param("uuid").unwrap_or("default");     // 获取字符串参数
+let price = req.param_as_f64("price").unwrap_or(0.0);       // 获取浮点参数
+let file_path = req.param("file_path").unwrap_or("");       // 获取路径参数
 ```
 
 📖 **完整示例请查看**:
@@ -254,6 +408,9 @@ cargo run --example grpc_client_bidirectional_example
 # 运行 ACME 证书管理示例
 cargo run --example acme_sandbox_demo
 
+# 运行 HEAD 回退功能演示
+cargo run --example head_fallback_demo
+
 # 运行动态路由示例（需要 reqwest 特性）
 cargo run --example dynamic_routes_demo --features reqwest
 
@@ -284,10 +441,10 @@ cargo run --example advanced_path_params_demo --features reqwest
 
 ### 客户端模块 (Client)
 
-- **HTTP 客户端**: 高性能 HTTP 客户端
-- **gRPC 客户端**: gRPC 客户端支持
-- **连接池**: 连接复用管理
-- **下载管理**: 文件下载支持
+- **gRPC 客户端**: 高性能 gRPC 客户端，支持双向流和连接池
+- **独立HTTP客户端**: 基于 reqwest 的高性能 HTTP 客户端（需要 reqwest 特性）
+- **连接池**: gRPC 连接复用管理
+- **下载管理**: gRPC 断点续传和元数据管理
 
 ### Python API 模块
 
@@ -301,8 +458,16 @@ cargo run --example advanced_path_params_demo --features reqwest
 src/
 ├── lib.rs              # 库入口
 ├── error.rs            # 错误处理
-├── compression.rs      # 压缩支持
+├── error_i18n.rs       # 多语言错误信息
 ├── cache/              # 缓存模块
+│   ├── mod.rs
+│   └── builder.rs      # 缓存构建器
+├── compression/        # 压缩模块
+│   ├── mod.rs
+│   ├── compressor.rs   # 压缩器实现
+│   ├── config.rs       # 压缩配置
+│   ├── types.rs        # 压缩类型
+│   └── utils.rs        # 压缩工具
 ├── engine/             # 核心引擎模块
 │   ├── mod.rs         # RatEngine 空实现，通过 builder 访问
 │   ├── memory.rs       # 内存池管理
@@ -317,42 +482,86 @@ src/
 │   ├── router.rs       # 路由系统
 │   ├── cache_middleware.rs # 缓存中间件
 │   ├── cache_version_manager.rs # 缓存版本管理
-│   ├── cert_manager.rs # 证书管理
-│   ├── grpc_handler.rs # gRPC 处理
+│   ├── cert_manager/   # 证书管理模块
+│   ├── grpc_handler/   # gRPC 处理模块
 │   ├── streaming.rs    # 流式处理
 │   └── performance.rs  # 性能管理
 ├── client/             # 客户端模块
 │   ├── mod.rs
-│   ├── http_client.rs  # HTTP 客户端
-│   ├── grpc_client.rs  # gRPC 客户端
-│   ├── builder.rs      # 客户端构建器
-│   └── connection_pool.rs # 连接池
+│   ├── grpc_client/    # gRPC 客户端目录
+│   ├── grpc_builder.rs # gRPC 客户端构建器
+│   ├── independent_http_client.rs # 独立HTTP客户端（基于reqwest）
+│   ├── connection_pool.rs # 连接池管理
+│   ├── download_metadata.rs # 下载元数据管理
+│   └── types.rs        # 客户端类型定义
 ├── python_api/         # Python 绑定
 │   ├── mod.rs
 │   ├── server.rs       # Python 服务器接口
 │   ├── client.rs       # Python 客户端接口
 │   ├── engine_builder.rs # Python 引擎构建器
-│   └── handlers.rs     # Python 处理器
-└── utils/              # 工具模块
+│   ├── handlers.rs     # Python 处理器
+│   ├── compression.rs  # Python 压缩接口
+│   ├── cert_manager.rs # Python 证书管理
+│   ├── streaming.rs    # Python 流式处理
+│   ├── codec.rs        # 编解码器
+│   ├── response_converter.rs # 响应转换器
+│   ├── grpc_queue_bridge.rs # gRPC 队列桥接
+│   ├── http_queue_bridge.rs # HTTP 队列桥接
+│   ├── smart_transfer.rs # Python 智能传输
+│   ├── congestion_control.rs # Python 拥塞控制
+│   └── http/          # Python HTTP 模块
+│       ├── mod.rs
+│       ├── core.rs
+│       ├── request.rs
+│       ├── response.rs
+│       └── http_converter.rs
+├── utils/              # 工具模块
+│   ├── mod.rs
+│   ├── logger.rs       # 日志系统
+│   ├── sys_info.rs     # 系统信息
+│   ├── ip_extractor.rs # IP 提取
+│   ├── crypto_provider.rs # 加密提供者
+│   └── feature_check.rs # 特性检查
+└── common/             # 公共模块
     ├── mod.rs
-    ├── logger.rs       # 日志系统
-    ├── sys_info.rs     # 系统信息
-    └── ip_extractor.rs # IP 提取
+    └── path_params.rs  # 路径参数处理
 
 examples/              # 示例文件
-├── builder_pattern_example.rs # 构建器模式示例
-├── streaming_demo.rs   # 流式处理示例
-├── streaming_response_test.rs # 流式响应功能测试示例
-├── sse_chat/           # SSE 聊天室示例
-│   ├── main.rs         # 服务器实现
-│   ├── login.html      # 登录页面
-│   └── chat.html       # 聊天室界面
-├── grpc_comprehensive_example.rs # gRPC 综合示例
-├── cache_compression_performance_test.rs # 缓存性能测试
-├── grpc_client_bidirectional_example.rs # gRPC 客户端示例
-├── acme_sandbox_demo.rs # ACME 证书管理示例
-├── dynamic_routes_demo.rs # 动态路由示例
-└── advanced_path_params_demo.rs # 高级路径参数示例
+├── 基础示例
+│   ├── builder_pattern_example.rs # 构建器模式示例
+│   ├── streaming_demo.rs   # 流式处理示例
+│   ├── streaming_response_test.rs # 流式响应功能测试示例
+│   └── head_fallback_demo.rs # HEAD 请求回退演示
+├── gRPC 示例
+│   ├── grpc_comprehensive_example.rs # gRPC 综合示例
+│   ├── grpc_client_bidirectional_example.rs # 双向流gRPC客户端
+│   ├── grpc_client_bidirectional_tls_example.rs # TLS双向流gRPC
+│   ├── grpc_client_bidirectional_mtls_example.rs # MTLS双向流gRPC
+│   └── grpc_resumable_download.rs # gRPC断点续传下载
+├── 路由和参数
+│   ├── dynamic_routes_demo.rs # 动态路由示例（需要 reqwest 特性）
+│   ├── advanced_path_params_demo.rs # 高级路径参数示例（需要 reqwest 特性）
+│   └── route_conflict_demo.rs # 路由冲突解决演示
+├── 缓存和性能
+│   ├── cache_compression_performance_test.rs # 缓存性能测试
+│   ├── router_high_speed_cache_example.rs # 路由器高速缓存演示
+│   ├── test_direct_l1_cache.rs # L1缓存测试
+│   └── test_direct_l2_cache.rs # L2缓存测试
+├── 中间件和协议
+│   ├── cors_example.rs # CORS跨域资源共享演示
+│   ├── https_redirect.rs # HTTPS重定向演示
+│   └── simple_protocol_detection.rs # 协议检测演示
+├── 证书和安全
+│   ├── acme_sandbox_demo.rs # ACME证书自动签发演示
+│   └── chunked_upload_demo.rs # 分块上传演示
+├── 开发和测试
+│   ├── sse_chat/ # SSE聊天室示例
+│   │   ├── main.rs
+│   │   ├── login.html
+│   │   └── chat.html
+│   ├── logging_example.rs # 日志系统使用演示
+│   ├── independent_http_client_test.rs # 独立HTTP客户端测试
+│   └── test_cache_version_manager.rs # 缓存版本管理测试
 ```
 
 ## 开发指南 🛠️
@@ -396,15 +605,47 @@ cargo test server::router
 - **操作系统**: macOS
 
 ### 性能数据
-- **吞吐量**: > 50,000 RPS
+- **吞吐量**: ~50,000 RPS（基于MacBook Air M1测试）
 - **延迟**: < 1ms (P99)
-- **内存使用**: < 50MB
+- **内存使用**: ~50MB（基础配置）
 - **CPU 使用**: 自适应负载均衡
 
-### 重要说明
-这些测试结果仅供参考，实际性能取决于：
-- 具体的硬件配置
-- 网络环境条件
-- 请求类型和数据大小
+⚠️ **重要说明**: 这些性能数据仅供参考，基于特定硬件和测试环境。实际性能会因以下因素而异：
+- 硬件配置（CPU、内存、存储）
+- 网络环境（延迟、带宽）
+- 请求类型和负载模式
 - 并发连接数
-- 系统负载情况
+- 业务逻辑复杂度
+
+## 版本信息
+
+- **当前版本**: 1.2.0
+- **支持Rust版本**: 2024 Edition
+- **许可证**: LGPL-3.0
+- **维护状态**: 活跃开发中
+
+## 贡献指南
+
+欢迎提交Issue和Pull Request！
+
+### 开发流程
+1. Fork本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 创建Pull Request
+
+### 代码规范
+- 遵循Rust官方代码规范
+- 使用 `cargo fmt` 格式化代码
+- 使用 `cargo clippy` 检查代码质量
+- 添加适当的文档注释
+- 确保所有测试通过
+
+## 许可证
+
+本项目采用 [LGPL-3.0](LICENSE) 许可证。
+
+## 致谢
+
+感谢所有为这个项目做出贡献的开发者！
