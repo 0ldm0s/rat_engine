@@ -378,6 +378,19 @@ let file_path = req.param("file_path").unwrap_or("");       // 获取路径参�
 - `examples/streaming_demo.rs` - 流式响应和全局SSE管理器演示
 - `examples/streaming_response_test.rs` - **流式响应功能测试**，验证HTTP状态码、JSON响应、SSE参数验证
 - `examples/sse_chat/` - **完整的多房间SSE聊天室示例**，展示实时通信应用
+- `examples/proxy_protocol_v2_test.rs` - **HAProxy PROXY protocol v2 兼容性测试**，展示代理支持
+
+## 部署指南 📋
+
+### HAProxy 集成
+
+RAT Engine 完全支持 HAProxy 负载均衡器，包括：
+
+- ✅ **gRPC 请求智能识别** - 在 HTTP 模式下正确识别 gRPC 请求
+- ✅ **PROXY Protocol v2 支持** - 获取原始客户端 IP 地址
+- ✅ **HTTP/2 协议支持** - 通过 ALPN 协商
+
+📖 **详细配置指南**: [HAProxy 配置指南](docs/haproxy_configuration.md)
 
 ### 运行示例
 
