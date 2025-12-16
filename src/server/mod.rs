@@ -106,6 +106,7 @@ pub mod grpc_queue_bridge_adapter;
 pub mod grpc_delegated_handler;
 pub mod http_request;
 pub mod global_sse_manager;
+pub mod proxy_protocol;
 
 pub use config::ServerConfig;
 pub use port_config::{PortConfig, PortConfigBuilder, PortMode, PortConfigError, HttpsConfig, CertificateConfig};
@@ -442,12 +443,81 @@ pub async fn detect_and_handle_protocol_with_tls(
         return Ok(());
     }
     
+    // 首先检查是否是 PROXY protocol v2
+    let mut detection_data = &buffer[..bytes_read];
+    let mut actual_remote_addr = remote_addr;
+    let mut proxy_header_len = 0;
+
+    if crate::server::proxy_protocol::ProxyProtocolV2Parser::is_proxy_v2(detection_data) {
+        println!("📡 [服务端] 检测到 PROXY protocol v2: {}", remote_addr);
+        println!("🔍 [服务端] 原始代理地址: {}", remote_addr);
+        println!("🔍 [服务端] PROXY头部数据: {:?}", &detection_data[..detection_data.len().min(50)]);
+
+        // 解析 PROXY protocol v2
+        if let Ok(proxy_info) = crate::server::proxy_protocol::ProxyProtocolV2Parser::parse(detection_data) {
+            println!("✅ [服务端] PROXY protocol v2 解析成功");
+            println!("🔍 [服务端] 命令类型: {:?}", proxy_info.command);
+            println!("🔍 [服务端] 地址族: {:?}", proxy_info.address_family);
+            println!("🔍 [服务端] 传输协议: {:?}", proxy_info.protocol);
+
+            // 提取原始客户端地址
+            if let Some(client_ip) = proxy_info.client_ip() {
+                println!("📍 [服务端] PROXY protocol v2 - 原始客户端IP: {}", client_ip);
+
+                // 如果有端口信息，尝试解析完整地址
+                if let Some(client_port) = proxy_info.client_port() {
+                    println!("📍 [服务端] PROXY protocol v2 - 原始客户端端口: {}", client_port);
+                    if let Ok(parsed_addr) = format!("{}:{}", client_ip, client_port).parse::<SocketAddr>() {
+                        actual_remote_addr = parsed_addr;
+                        println!("✅ [服务端] 更新远程地址为原始客户端地址: {} (原来是: {})",
+                            actual_remote_addr, remote_addr);
+                    } else {
+                        println!("⚠️ [服务端] 无法解析客户端地址: {}:{}", client_ip, client_port);
+                    }
+                } else {
+                    println!("ℹ️ [服务端] PROXY protocol v2 - 只有客户端IP，无端口信息: {}", client_ip);
+                }
+            } else {
+                println!("⚠️ [服务端] PROXY protocol v2 中没有客户端地址信息");
+            }
+
+            // 检查ALPN协议
+            if let Some(ref alpn) = proxy_info.alpn {
+                println!("🔐 [服务端] PROXY ALPN: {}", alpn);
+                if alpn.to_lowercase() == "h2" {
+                    println!("🚀 [服务端] ALPN指示为HTTP/2");
+                }
+            } else {
+                println!("ℹ️ [服务端] PROXY protocol v2 中没有ALPN信息");
+            }
+
+            // 显示TLV信息
+            if !proxy_info.tlvs.is_empty() {
+                println!("🔍 [服务端] PROXY TLV数量: {}", proxy_info.tlvs.len());
+                for (i, tlv) in proxy_info.tlvs.iter().enumerate() {
+                    println!("🔍 [服务端] TLV[{}]: Type=0x{:02x}, Length={}", i, tlv.tpe, tlv.value.len());
+                }
+            }
+        } else {
+            println!("❌ [服务端] PROXY protocol v2 解析失败");
+        }
+
+        // 计算并跳过PROXY头部
+        proxy_header_len = 16 + u16::from_be_bytes([detection_data[14], detection_data[15]]) as usize;
+        detection_data = &detection_data[proxy_header_len..];
+
+        println!("🔄 [服务端] 跳过 PROXY protocol v2 头部 ({} 字节)，剩余应用数据: {} 字节",
+            proxy_header_len, detection_data.len());
+        println!("🔍 [服务端] 跳过后应用数据预览: {:?}", &detection_data[..detection_data.len().min(50)]);
+    } else {
+        println!("ℹ️ [服务端] 未检测到 PROXY protocol v2，使用普通协议检测");
+    }
+
     // 使用 psi_detector 进行协议检测
-    let detection_data = &buffer[..bytes_read];
-    rat_logger::debug!("🔍 [服务端] 开始 psi_detector 协议检测: {} (数据长度: {})", remote_addr, bytes_read);
+    rat_logger::debug!("🔍 [服务端] 开始 psi_detector 协议检测: {} (数据长度: {})", actual_remote_addr, detection_data.len());
 
     // 添加调试信息：打印接收到的数据
-    let data_preview = String::from_utf8_lossy(&buffer[..bytes_read.min(50)]);
+    let data_preview = String::from_utf8_lossy(&detection_data[..detection_data.len().min(50)]);
     rat_logger::debug!("🔍 [服务端] 接收到的数据预览: {}", data_preview);
     
     // 创建协议检测器
@@ -477,23 +547,30 @@ pub async fn detect_and_handle_protocol_with_tls(
             let protocol_type = result.protocol_type();
             let confidence = result.confidence();
 
-            rat_logger::debug!("🔍 [服务端] psi_detector 检测结果: {} (置信度: {:.1}%, 协议: {:?})",
-                remote_addr, confidence * 100.0, protocol_type);
-            
+            rat_logger::info!("🎯 [服务端] psi_detector 检测结果: {} (置信度: {:.1}%, 协议: {:?})",
+                actual_remote_addr, confidence * 100.0, protocol_type);
+
+            // 如果是从PROXY protocol过来的，额外说明
+            if proxy_header_len > 0 {
+                rat_logger::info!("📋 [服务端] 通过 PROXY protocol v2 转发的 {} 请求", protocol_type);
+                rat_logger::debug!("🔍 [服务端] 使用更新后的客户端地址: {}", actual_remote_addr);
+            }
+
             // 检查是否需要拦截
             if should_block_protocol(&protocol_type, confidence) {
-                debug!("🚫 [服务端] 拦截恶意或未知协议: {} (协议: {:?}, 置信度: {:.1}%)", 
-                    remote_addr, protocol_type, confidence * 100.0);
-                
+                rat_logger::error!("🚫 [服务端] 拦截恶意或未知协议: {} (协议: {:?}, 置信度: {:.1}%)",
+                    actual_remote_addr, protocol_type, confidence * 100.0);
+
                 // 发送拦截响应并关闭连接
                 let block_response = b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"error\":\"Forbidden\",\"message\":\"Protocol blocked\"}";
                 let _ = stream.write_all(block_response).await;
                 let _ = stream.shutdown().await;
                 return Ok(());
             }
-            
+
             // 根据检测结果路由到相应的处理器
-            route_by_detected_protocol(stream, &buffer[..bytes_read], protocol_type, remote_addr, router, adapter, tls_cert_manager.clone()).await
+            rat_logger::info!("🚀 [服务端] 路由到 {} 处理器", protocol_type);
+            route_by_detected_protocol(stream, detection_data, protocol_type, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await
         }
         Err(e) => {
             debug!("🚫 [服务端] psi_detector 检测失败，疑似恶意探测，直接丢弃连接: {} (错误: {})", remote_addr, e);
