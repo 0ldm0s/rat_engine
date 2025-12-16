@@ -513,13 +513,58 @@ pub async fn detect_and_handle_protocol_with_tls(
         println!("ℹ️ [服务端] 未检测到 PROXY protocol v2，使用普通协议检测");
     }
 
-    // 使用 psi_detector 进行协议检测
+    // 如果检测到 PROXY protocol v2，优先使用其中的协议信息
+    if proxy_header_len > 0 {
+        // 重新解析 PROXY protocol 以获取 ALPN 信息
+        if let Ok(proxy_info) = crate::server::proxy_protocol::ProxyProtocolV2Parser::parse(&buffer[..bytes_read]) {
+            println!("🔍 [服务端] 检查 PROXY protocol v2 ALPN 信息");
+
+            // 检查 ALPN 协议
+            if let Some(ref alpn) = proxy_info.alpn {
+                println!("🚀 [服务端] 使用 PROXY ALPN 协议: {}", alpn);
+
+                // 根据 ALPN 直接决定协议类型
+                match alpn.to_lowercase().as_str() {
+                    "h2" => {
+                        println!("📋 [服务端] ALPN h2，检测是否为 gRPC 请求");
+
+                        // 检查是否为 gRPC 请求（基于 HEADERS）
+                        if detection_data.len() >= 16 {
+                            // 检查 HTTP/2 HEADERS 中的 content-type
+                            let data_str = String::from_utf8_lossy(detection_data);
+                            if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
+                                println!("✅ [服务端] 识别为 gRPC over HTTP/2");
+                                route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                                return Ok(());
+                            }
+                        }
+
+                        println!("✅ [服务端] 识别为 HTTP/2");
+                        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                        return Ok(());
+                    },
+                    "http/1.1" => {
+                        println!("✅ [服务端] 识别为 HTTP/1.1");
+                        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                        return Ok(());
+                    },
+                    _ => {
+                        println!("⚠️ [服务端] 未知 ALPN 协议: {}，继续使用 psi_detector", alpn);
+                    }
+                };
+            } else {
+                println!("⚠️ [服务端] PROXY protocol v2 中没有 ALPN 信息，继续使用 psi_detector");
+            }
+        }
+    }
+
+    // 如果没有 ALPN 信息或 ALPN 无法处理，使用 psi_detector 进行协议检测
     rat_logger::debug!("🔍 [服务端] 开始 psi_detector 协议检测: {} (数据长度: {})", actual_remote_addr, detection_data.len());
 
     // 添加调试信息：打印接收到的数据
     let data_preview = String::from_utf8_lossy(&detection_data[..detection_data.len().min(50)]);
     rat_logger::debug!("🔍 [服务端] 接收到的数据预览: {}", data_preview);
-    
+
     // 创建协议检测器
     let detector = match DetectorBuilder::new()
         .enable_http()
@@ -538,10 +583,10 @@ pub async fn detect_and_handle_protocol_with_tls(
             return Ok(());
         }
     };
-    
+
     // 执行协议检测
     let detection_result = detector.detect(detection_data);
-    
+
     match detection_result {
         Ok(result) => {
             let protocol_type = result.protocol_type();

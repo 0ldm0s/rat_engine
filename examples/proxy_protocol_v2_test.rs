@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     logger::info!("   5. gRPC 调用 /test.Service/Echo 将返回原始客户端IP");
 
     // 启动服务器
-    engine.start("0.0.0.0".to_string(), 8080)
+    engine.start("0.0.0.0".to_string(), 9080)
         .await
         .map_err(|e| format!("启动服务器失败: {}", e))?;
 
