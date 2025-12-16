@@ -171,8 +171,33 @@ impl HttpRequest {
 
     /// 检查是否是 gRPC 请求
     pub fn is_grpc(&self) -> bool {
-        self.header("content-type")
+        // 检查 content-type 头部
+        let content_type_is_grpc = self.header("content-type")
             .map(|ct| ct.starts_with("application/grpc"))
+            .unwrap_or(false);
+
+        if content_type_is_grpc {
+            return true;
+        }
+
+        // HAProxy 兼容性检查：检查 TE 头部是否为 trailers
+        let te_is_trailers = self.header("te")
+            .map(|te| te.to_lowercase() == "trailers")
+            .unwrap_or(false);
+
+        // HAProxy 兼容性检查：检查 X-Forwarded-Proto 头部
+        let proto_is_https = self.header("x-forwarded-proto")
+            .map(|proto| proto.to_lowercase() == "https")
+            .unwrap_or(false);
+
+        // 如果同时有 TE: trailers 和可能的 HTTPS 标识，认为是 gRPC 请求
+        if te_is_trailers {
+            return true;
+        }
+
+        // 检查 User-Agent 是否包含 grpc
+        self.header("user-agent")
+            .map(|ua| ua.to_lowercase().contains("grpc"))
             .unwrap_or(false)
     }
 

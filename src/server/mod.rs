@@ -920,11 +920,44 @@ async fn handle_h2_request(
     }
     
     // 检查是否为 gRPC 请求
-    let is_grpc = request.headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.starts_with("application/grpc"))
-        .unwrap_or(false);
+    let is_grpc = {
+        // 检查 content-type 头部
+        let content_type_is_grpc = request.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.starts_with("application/grpc"))
+            .unwrap_or(false);
+
+        if content_type_is_grpc {
+            true
+        } else {
+            // HAProxy 兼容性检查：检查 TE 头部是否为 trailers
+            let te_is_trailers = request.headers()
+                .get("te")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.to_lowercase() == "trailers")
+                .unwrap_or(false);
+
+            // HAProxy 兼容性检查：检查 X-Forwarded-Proto 头部
+            let proto_is_https = request.headers()
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.to_lowercase() == "https")
+                .unwrap_or(false);
+
+            // 如果有 TE: trailers，认为是 gRPC 请求
+            if te_is_trailers {
+                true
+            } else {
+                // 检查 User-Agent 是否包含 grpc
+                request.headers()
+                    .get("user-agent")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.to_lowercase().contains("grpc"))
+                    .unwrap_or(false)
+            }
+        }
+    };
     
     debug!("🔍 [服务端] 请求类型判断: is_grpc = {}", is_grpc);
     
