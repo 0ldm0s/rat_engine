@@ -733,7 +733,8 @@ async fn route_by_detected_protocol(
             let reconstructed_stream = ReconstructedStream::new(stream, buffer);
             handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
         }
-        ProtocolType::HTTP2 | ProtocolType::GRPC => {
+        ProtocolType::HTTP2 => {
+            // 处理 HTTP/2 请求
             // 检查是否是 TLS 连接上的 HTTP/2
             // 通过检查数据开头是否是 TLS 记录类型 (0x16) 来判断
             if !buffer.is_empty() && buffer[0] == 0x16 {
@@ -751,6 +752,43 @@ async fn route_by_detected_protocol(
                     warn!("🚫 [服务端] 检测到 HTTP/2 连接但 H2C 未启用，拒绝连接: {}", remote_addr);
                     Err("HTTP/2 over cleartext (H2C) 未启用".into())
                 }
+            }
+        }
+        ProtocolType::GRPC => {
+            // 处理 gRPC 请求
+            info!("🚀 [服务端] 路由到 gRPC 处理器: {}", remote_addr);
+
+            // 检查数据格式以决定使用哪种处理器
+            let data_str = String::from_utf8_lossy(buffer);
+
+            if data_str.starts_with("PRI * HTTP/2.0") {
+                // HTTP/2 格式的 gRPC - 使用 H2C 处理器
+                debug!("🚀 [服务端] 检测到 HTTP/2 格式的 gRPC");
+                if router.is_h2c_enabled() {
+                    let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                    handle_h2c_connection_with_stream(reconstructed_stream, remote_addr, router).await
+                } else {
+                    warn!("🚫 [服务端] HTTP/2 格式的 gRPC 需要 H2C 支持: {}", remote_addr);
+                    Err("HTTP/2 gRPC requires H2C support".into())
+                }
+            } else if data_str.contains("HTTP/1.") {
+                // HTTP/1.x 格式的 gRPC - 转换为标准的 HTTP/1.1 请求并处理
+                info!("🚀 [服务端] 检测到 HTTP/1.x 格式的 gRPC，转换为 HTTP 请求处理");
+
+                // 创建 ReconstructedStream
+                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+
+                // 直接调用 HTTP 处理器，跳过协议检测
+                handle_http1_connection_with_stream(reconstructed_stream, remote_addr, adapter).await
+            } else if !buffer.is_empty() && buffer[0] == 0x16 {
+                // TLS 上的 gRPC
+                info!("🔐 [服务端] 检测到 TLS 上的 gRPC，进行 TLS 握手: {}", remote_addr);
+                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
+            } else {
+                // 无法识别的格式
+                warn!("🚫 [服务端] 无法识别 gRPC 协议格式: {}", remote_addr);
+                Err("无法识别 gRPC 协议格式".into())
             }
         }
         ProtocolType::WebSocket => {
