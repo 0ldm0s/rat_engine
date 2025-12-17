@@ -585,12 +585,22 @@ pub async fn detect_and_handle_protocol_with_tls(
     };
 
     // 执行协议检测
+    println!("🔍 [服务端] [DEBUG] 即将调用 psi_detector.detect()");
+    println!("🔍 [服务端] [DEBUG] 检测数据长度: {} 字节", detection_data.len());
+    println!("🔍 [服务端] [DEBUG] 检测数据内容: {:?}", &detection_data[..detection_data.len().min(64)]);
+
     let detection_result = detector.detect(detection_data);
+
+    println!("🔍 [服务端] [DEBUG] psi_detector.detect() 返回结果");
 
     match detection_result {
         Ok(result) => {
             let protocol_type = result.protocol_type();
             let confidence = result.confidence();
+
+            println!("✅ [服务端] [DEBUG] psi_detector 检测成功");
+            println!("🔍 [服务端] [DEBUG] 检测到的协议: {:?}", protocol_type);
+            println!("🔍 [服务端] [DEBUG] 置信度: {:.1}%", confidence * 100.0);
 
             rat_logger::info!("🎯 [服务端] psi_detector 检测结果: {} (置信度: {:.1}%, 协议: {:?})",
                 actual_remote_addr, confidence * 100.0, protocol_type);
@@ -603,6 +613,7 @@ pub async fn detect_and_handle_protocol_with_tls(
 
             // 检查是否需要拦截
             if should_block_protocol(&protocol_type, confidence) {
+                println!("🚫 [服务端] [DEBUG] 协议被拦截: {:?} (置信度: {:.1}%)", protocol_type, confidence * 100.0);
                 rat_logger::error!("🚫 [服务端] 拦截恶意或未知协议: {} (协议: {:?}, 置信度: {:.1}%)",
                     actual_remote_addr, protocol_type, confidence * 100.0);
 
@@ -614,10 +625,16 @@ pub async fn detect_and_handle_protocol_with_tls(
             }
 
             // 根据检测结果路由到相应的处理器
+            println!("🚀 [服务端] [DEBUG] 准备路由到 {} 处理器", protocol_type);
             rat_logger::info!("🚀 [服务端] 路由到 {} 处理器", protocol_type);
             route_by_detected_protocol(stream, detection_data, protocol_type, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await
         }
         Err(e) => {
+            println!("❌ [服务端] [DEBUG] psi_detector 检测失败！");
+            println!("🔍 [服务端] [DEBUG] 错误信息: {}", e);
+            println!("🔍 [服务端] [DEBUG] 输入数据长度: {}", detection_data.len());
+            println!("🔍 [服务端] [DEBUG] 输入数据: {:?}", &detection_data[..detection_data.len().min(64)]);
+
             debug!("🚫 [服务端] psi_detector 检测失败，疑似恶意探测，直接丢弃连接: {} (错误: {})", remote_addr, e);
             crate::utils::logger::warn!("🚫 协议检测失败，疑似恶意探测，丢弃连接: {} (错误: {})", remote_addr, e);
             // 直接关闭连接，不进行任何响应
