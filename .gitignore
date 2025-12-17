@@ -1,4 +1,5 @@
 /target
+/not_git
 /python/target
 /.cargo
 /python/rat_engine/*.so

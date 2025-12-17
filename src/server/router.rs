@@ -739,6 +739,10 @@ pub struct Router {
     h2_enabled: bool,
     h2c_enabled: bool,
 
+    // 专用模式配置
+    http_only_mode: bool,
+    grpc_only_mode: bool,
+
     // HEAD 请求回退到 GET 的配置
     head_fallback_enabled: bool,
     head_fallback_whitelist: Option<HashSet<String>>,
@@ -767,6 +771,8 @@ impl Router {
             cert_manager: None,
             h2_enabled: false,
             h2c_enabled: false,
+            http_only_mode: false,
+            grpc_only_mode: false,
             head_fallback_enabled: false,
             head_fallback_whitelist: None,
         }
@@ -1769,6 +1775,20 @@ impl Router {
         self
     }
 
+    /// 启用 HTTP 专用模式（只接受 HTTP 请求）
+    pub fn enable_http_only(&mut self) -> &mut Self {
+        self.http_only_mode = true;
+        self.grpc_only_mode = false;
+        self
+    }
+
+    /// 启用 gRPC 专用模式（只接受 gRPC 请求）
+    pub fn enable_grpc_only(&mut self) -> &mut Self {
+        self.grpc_only_mode = true;
+        self.http_only_mode = false;
+        self
+    }
+
     /// 检查是否启用了 HTTP/2
     pub fn is_h2_enabled(&self) -> bool {
         self.h2_enabled
@@ -1777,6 +1797,16 @@ impl Router {
     /// 检查是否启用了 H2C
     pub fn is_h2c_enabled(&self) -> bool {
         self.h2c_enabled
+    }
+
+    /// 检查是否为 HTTP 专用模式
+    pub fn is_http_only(&self) -> bool {
+        self.http_only_mode
+    }
+
+    /// 检查是否为 gRPC 专用模式
+    pub fn is_grpc_only(&self) -> bool {
+        self.grpc_only_mode
     }
 
     /// 添加 IP 到黑名单

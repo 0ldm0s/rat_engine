@@ -16,7 +16,10 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::future::Future;
 
-use rat_engine::{Request, Response, Method, StatusCode, Incoming, Bytes};
+use rat_engine::{Request, Response, Method, StatusCode, Incoming, Bytes, RatError, RatResult};
+
+// 客户端类型导入（需要启用特性）
+use rat_engine::client::{RatGrpcClient, RatGrpcClientBuilder, RatIndependentHttpClient, RatIndependentHttpClientBuilder};
 use rat_engine::Full;
 use tokio::fs;
 use tokio::sync::mpsc;
@@ -26,7 +29,6 @@ use async_stream::stream;
 use serde::{Serialize, Deserialize};
 use serde_json;
 use bincode::{Encode, Decode};
-use rat_engine::{RatIndependentHttpClient, RatIndependentHttpClientBuilder, RatGrpcClient, RatGrpcClientBuilder, RatError, RatResult};
 use std::env;
 
 use rat_engine::{

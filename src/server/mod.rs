@@ -613,6 +613,26 @@ pub async fn detect_and_handle_protocol_with_tls(
         }
     };
 
+    // 检查专用模式（简化协议检测）
+    let data_str = String::from_utf8_lossy(detection_data);
+    let has_grpc_header = data_str.contains("application/grpc+RatEngine") ||
+                          data_str.contains("content-type: application/grpc");
+
+    if router.is_http_only() {
+        println!("✅ [服务端] HTTP专用模式，直接路由到HTTP处理器");
+        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+        return Ok(());
+    } else if router.is_grpc_only() {
+        if has_grpc_header {
+            println!("✅ [服务端] gRPC专用模式 + gRPC头部，直接路由到gRPC处理器");
+            route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+            return Ok(());
+        } else {
+            println!("⚠️ [服务端] gRPC专用模式但没有gRPC头部，拒绝连接");
+            return Err("gRPC专用模式下需要gRPC头部".into());
+        }
+    }
+
     // 执行协议检测
     println!("🔍 [服务端] [DEBUG] 即将调用 psi_detector.detect()");
     println!("🔍 [服务端] [DEBUG] 检测数据长度: {} 字节", detection_data.len());
