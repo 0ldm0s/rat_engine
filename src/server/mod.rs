@@ -561,12 +561,26 @@ pub async fn detect_and_handle_protocol_with_tls(
             // 如果没有 ALPN 或 ALPN 未知，检查 HAProxy 添加的头部
             println!("🔍 [服务端] [DEBUG] 检查应用数据中的 HAProxy 头部");
             let data_str = String::from_utf8_lossy(detection_data);
-            println!("🔍 [服务端] [DEBUG] 应用数据: {}", data_str);
+            println!("🔍 [服务端] [DEBUG] 应用数据前200字符: {}", &data_str[..data_str.len().min(200)]);
 
             // 检查是否为 gRPC 请求（基于 HAProxy 添加的头部）
             if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
                 println!("✅ [服务端] 通过 HAProxy 头部识别为 gRPC 请求");
-                route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+
+                // 检查实际传输协议格式
+                if data_str.contains("HTTP/2") || data_str.starts_with("PRI * HTTP/2.0") {
+                    println!("✅ [服务端] 检测到 HTTP/2 格式的 gRPC");
+                    route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                } else if data_str.contains("HTTP/1.1") || data_str.contains("HTTP/1.0") {
+                    println!("✅ [服务端] 检测到 HTTP/1.x 格式的 gRPC，使用 HTTP 处理器");
+                    // 对于 HTTP/1.x 格式的 gRPC，使用 HTTP 处理器
+                    // 但是需要在 HTTP 处理器内部通过 content-type 识别为 gRPC
+                    route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                } else {
+                    // 无法识别格式，默认使用 HTTP 处理器
+                    println!("⚠️ [服务端] 无法识别 gRPC 传输格式，默认使用 HTTP 处理器");
+                    route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                }
                 return Ok(());
             }
 
