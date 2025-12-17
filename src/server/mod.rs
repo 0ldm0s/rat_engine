@@ -515,6 +515,8 @@ pub async fn detect_and_handle_protocol_with_tls(
 
     // 如果检测到 PROXY protocol v2，优先使用其中的协议信息
     if proxy_header_len > 0 {
+        println!("🔍 [服务端] [DEBUG] 使用 PROXY protocol v2 模式，跳过 psi_detector");
+
         // 重新解析 PROXY protocol 以获取 ALPN 信息
         if let Ok(proxy_info) = crate::server::proxy_protocol::ProxyProtocolV2Parser::parse(&buffer[..bytes_read]) {
             println!("🔍 [服务端] 检查 PROXY protocol v2 ALPN 信息");
@@ -549,12 +551,31 @@ pub async fn detect_and_handle_protocol_with_tls(
                         return Ok(());
                     },
                     _ => {
-                        println!("⚠️ [服务端] 未知 ALPN 协议: {}，继续使用 psi_detector", alpn);
+                        println!("⚠️ [服务端] 未知 ALPN 协议: {}，继续检查头部", alpn);
                     }
                 };
             } else {
-                println!("⚠️ [服务端] PROXY protocol v2 中没有 ALPN 信息，继续使用 psi_detector");
+                println!("⚠️ [服务端] PROXY protocol v2 中没有 ALPN 信息，检查 HAProxy 添加的头部");
             }
+
+            // 如果没有 ALPN 或 ALPN 未知，检查 HAProxy 添加的头部
+            println!("🔍 [服务端] [DEBUG] 检查应用数据中的 HAProxy 头部");
+            let data_str = String::from_utf8_lossy(detection_data);
+            println!("🔍 [服务端] [DEBUG] 应用数据: {}", data_str);
+
+            // 检查是否为 gRPC 请求（基于 HAProxy 添加的头部）
+            if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
+                println!("✅ [服务端] 通过 HAProxy 头部识别为 gRPC 请求");
+                route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                return Ok(());
+            }
+
+            // 否则识别为 HTTP 请求
+            println!("✅ [服务端] 识别为 HTTP 请求");
+            route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+            return Ok(());
+        } else {
+            println!("❌ [服务端] PROXY protocol v2 解析失败，继续使用 psi_detector");
         }
     }
 
