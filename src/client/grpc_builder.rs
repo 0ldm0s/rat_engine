@@ -376,8 +376,7 @@ impl RatGrpcClientBuilder {
         let compression_mode = self.compression_mode
             .ok_or_else(|| RatError::RequestError("压缩模式未设置".to_string()))?;
 
-        let development_mode = self.development_mode
-            .ok_or_else(|| RatError::RequestError("开发模式未设置".to_string()))?;
+        let development_mode = self.development_mode.unwrap_or(false);  // 默认不启用开发模式
 
         // 创建连接器
         let mut connector = HttpConnector::new();
