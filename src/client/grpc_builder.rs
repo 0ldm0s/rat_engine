@@ -388,6 +388,7 @@ impl RatGrpcClientBuilder {
         
         // 配置 HTTP/2
         let client = if http2_only {
+            // HTTP/2 prior knowledge 模式
             client_builder
                 .http2_only(true)
                 .build(connector)

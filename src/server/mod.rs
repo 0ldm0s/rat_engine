@@ -567,21 +567,15 @@ pub async fn detect_and_handle_protocol_with_tls(
             if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
                 println!("✅ [服务端] 通过 HAProxy 头部识别为 gRPC 请求");
 
-                // 检查实际传输协议格式
-                if data_str.contains("HTTP/2") || data_str.starts_with("PRI * HTTP/2.0") {
-                    println!("✅ [服务端] 检测到 HTTP/2 格式的 gRPC");
-                    route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-                } else if data_str.contains("HTTP/1.1") || data_str.contains("HTTP/1.0") {
-                    println!("✅ [服务端] 检测到 HTTP/1.x 格式的 gRPC，使用 HTTP 处理器");
-                    // 对于 HTTP/1.x 格式的 gRPC，使用 HTTP 处理器
-                    // 但是需要在 HTTP 处理器内部通过 content-type 识别为 gRPC
-                    route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                // gRPC 请求必须使用 HTTP/2
+                if router.is_h2c_enabled() {
+                    println!("✅ [服务端] gRPC 请求强制路由到 HTTP/2 处理器");
+                    route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                    return Ok(());
                 } else {
-                    // 无法识别格式，默认使用 HTTP 处理器
-                    println!("⚠️ [服务端] 无法识别 gRPC 传输格式，默认使用 HTTP 处理器");
-                    route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+                    println!("❌ [服务端] gRPC 请求需要 H2C 支持，但未启用");
+                    return Err("gRPC requires H2C to be enabled".into());
                 }
-                return Ok(());
             }
 
             // 否则识别为 HTTP 请求
