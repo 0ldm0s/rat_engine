@@ -1,8 +1,10 @@
-# RAT Engine 专用端口模式 - 简化方案
+# RAT Engine 专用模式 - 单端口 gRPC 解决方案
 
 ## 概述
 
 本方案通过在 RAT Engine 中添加**专用模式**配置，彻底简化了 nginx 与后端的交互，解决了 gRPC over HTTP/2 的传输问题。
+
+**关键特点**：启用 gRPC 专用模式后，只需要一个端口，无需分端口配置。
 
 ## 核心概念
 
@@ -22,23 +24,42 @@ RAT Engine 现在支持两种专用模式：
 
 ## 配置方法
 
-### 1. RAT Engine 配置
+### 1. RAT Engine 配置（单个 gRPC 服务）
 
 ```rust
-// gRPC 服务器
+// gRPC 专用服务器
 let mut router = Router::new();
 router.enable_grpc_only();  // 启用 gRPC 专用模式
 router.enable_h2();         // 启用 HTTP/2
 
-// 启动服务（端口 50051）
+// 注册 gRPC 方法
+router.add_grpc_unary("/dns/Query", handler);
+
+// 启动服务（只需要一个端口）
 engine.start("0.0.0.0".to_string(), 50051).await?;
+```
 
-// HTTP 服务器
-let mut router = Router::new();
-router.enable_http_only();  // 启用 HTTP 专用模式
+如果需要同时支持 HTTP 和 gRPC，需要启动两个独立的 RAT Engine 实例：
 
-// 启动服务（端口 8080）
-engine.start("0.0.0.0".to_string(), 8080).await?;
+```rust
+// 实例 1: gRPC 专用服务器
+let mut grpc_router = Router::new();
+grpc_router.enable_grpc_only();
+grpc_router.enable_h2();
+grpc_router.add_grpc_unary("/dns/Query", grpc_handler);
+let grpc_engine = RatEngine::builder().router(grpc_router).build()?;
+tokio::spawn(async move {
+    grpc_engine.start("0.0.0.0".to_string(), 50051).await
+});
+
+// 实例 2: HTTP 专用服务器
+let mut http_router = Router::new();
+http_router.enable_http_only();
+http_router.add_route(Method::GET, "/", http_handler);
+let http_engine = RatEngine::builder().router(http_router).build()?;
+tokio::spawn(async move {
+    http_engine.start("0.0.0.0".to_string(), 8080).await
+});
 ```
 
 ### 2. Nginx 配置
@@ -77,14 +98,14 @@ RAT Engine (PSI 检测 → 错误路由)
 ❌ 失败
 ```
 
-### 专用端口方案
+### 专用模式方案
 
 ```
 客户端 (HTTP/2 + ALPN:h2)
     ↓
-nginx (基于端口分流)
+nginx (直接转发到专用端口)
     ↓
-端口 50051 → gRPC 专用 RAT Engine
+gRPC 专用端口 50051 → gRPC 专用 RAT Engine
     ↓
 ✅ 成功
 ```
@@ -98,9 +119,9 @@ nginx (基于端口分流)
 
 ## 注意事项
 
-1. **端口分配**:
-   - gRPC: 50051 (可自定义)
-   - HTTP: 8080 (可自定义)
+1. **端口配置**:
+   - gRPC 专用模式: 只需要一个端口（如 50051）
+   - 如果需要同时支持 HTTP，启动另一个独立的 RAT Engine 实例
 
 2. **nginx 配置**:
    - 必须设置 `application/grpc+RatEngine` 头部
@@ -109,6 +130,7 @@ nginx (基于端口分流)
 3. **RAT Engine 配置**:
    - 启用 `enable_grpc_only()` 后会自动禁用 HTTP 模式
    - 必须设置 `enable_h2()` 以支持 HTTP/2
+   - 单个路由器实例只能启用一种专用模式
 
 ## 测试验证
 
@@ -120,7 +142,7 @@ curl --http2 \
   --data-binary 'test' \
   http://127.0.0.1:50051/dns/Query
 
-# 测试 HTTP 请求
+# 如果启动了 HTTP 专用实例，测试 HTTP 请求
 curl http://127.0.0.1:8080/
 ```
 
