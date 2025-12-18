@@ -615,8 +615,16 @@ pub async fn detect_and_handle_protocol_with_tls(
 
     // 检查专用模式（简化协议检测）
     let data_str = String::from_utf8_lossy(detection_data);
-    let has_grpc_header = data_str.contains("application/grpc+RatEngine") ||
-                          data_str.contains("content-type: application/grpc");
+    let data_str_lower = data_str.to_lowercase();
+
+    // 打印接收到的头部信息
+    println!("[服务端DEBUG] 接收到的原始数据 (前200字节):");
+    println!("  原始: {:?}", &data_str[..data_str.len().min(200)]);
+    println!("  小写: {:?}", &data_str_lower[..data_str_lower.len().min(200)]);
+
+    let has_grpc_header = data_str_lower.contains("application/grpc+ratengine") ||
+                          data_str_lower.contains("application/grpc") ||
+                          data_str.starts_with("PRI * HTTP/2.0");  // HTTP/2格式的gRPC请求
 
     if router.is_http_only() {
         println!("✅ [服务端] HTTP专用模式，直接路由到HTTP处理器");

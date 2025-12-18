@@ -113,7 +113,7 @@ impl RatGrpcClient {
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+RatEngine"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent", &[("msg", &e.to_string())])));
 
@@ -270,7 +270,7 @@ impl RatGrpcClient {
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_request_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+RatEngine"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent", &[("msg", &e.to_string())])));        
 

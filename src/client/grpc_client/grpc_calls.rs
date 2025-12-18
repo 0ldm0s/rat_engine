@@ -7,7 +7,7 @@ use serde::{Serialize, Deserialize};
 use bincode;
 
 use hyper::{Request, Method, Uri};
-use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE, ACCEPT_ENCODING, USER_AGENT, CONTENT_ENCODING};
+use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE, ACCEPT_ENCODING, USER_AGENT, CONTENT_ENCODING, TE};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
@@ -156,7 +156,8 @@ impl RatGrpcClient {
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+RatEngine"));
+        headers.insert(TE, HeaderValue::from_static("trailers"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?);
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
@@ -170,6 +171,12 @@ impl RatGrpcClient {
             .uri(uri)
             .body(Full::new(compressed_data))
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_request_failed", &[("msg", &e.to_string())])))?;
+
+        // 打印发送的头部信息
+        println!("[客户端DEBUG] 发送HTTP头部:");
+        for (name, value) in &headers {
+            println!("  {}: {}", name, value.to_str().unwrap_or("<无法解析>"));
+        }
 
         // 添加头部
         let (mut parts, body) = request.into_parts();
@@ -242,7 +249,8 @@ impl RatGrpcClient {
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_uri", &[("msg", &e.to_string())])))?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+bincode"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+RatEngine"));
+        headers.insert(TE, HeaderValue::from_static("trailers"));
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("invalid_user_agent_msg", &[("msg", &e.to_string())])))?);
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(self.compression_mode.accept_encoding()));
@@ -256,6 +264,12 @@ impl RatGrpcClient {
             .uri(uri)
             .body(Full::new(compressed_data))
             .map_err(|e| RatError::RequestError(rat_embed_lang::tf("build_request_failed", &[("msg", &e.to_string())])))?;
+
+        // 打印发送的头部信息
+        println!("[客户端DEBUG] 发送HTTP头部:");
+        for (name, value) in &headers {
+            println!("  {}: {}", name, value.to_str().unwrap_or("<无法解析>"));
+        }
 
         // 添加头部
         let (mut parts, body) = request.into_parts();
