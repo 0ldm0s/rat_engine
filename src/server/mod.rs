@@ -338,10 +338,22 @@ async fn handle_grpc_connection(
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     crate::utils::logger::debug!("🔗 [gRPC] 新连接: {}", remote_addr);
-    
+
     // 在分端口模式下，gRPC 端口只处理 gRPC 协议
-    // 直接复用现有的协议检测逻辑，但只允许 gRPC 协议
-    detect_and_handle_protocol(stream, remote_addr, router, adapter).await
+    // 不进行协议检测，直接根据配置处理
+    // detect_and_handle_protocol(stream, remote_addr, router, adapter).await
+
+    // 如果启用了 TLS，使用 TLS 处理
+    if router.get_cert_manager().is_some() {
+        debug!("🔐 [gRPC] 使用 TLS 处理连接: {}", remote_addr);
+        // TLS 模式下仍需要协议检测来处理 TLS 握手
+        let cert_manager = router.get_cert_manager();
+        detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, cert_manager).await
+    } else {
+        debug!("🌊 [gRPC] 使用 H2C 处理连接: {}", remote_addr);
+        // 直接使用 H2C 处理，跳过协议检测
+        handle_h2c_connection_with_stream(stream, remote_addr, router).await
+    }
 }
 
 /// 处理单个连接，支持 HTTP/1.1、HTTP/2 和 gRPC
@@ -631,12 +643,30 @@ pub async fn detect_and_handle_protocol_with_tls(
         route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
         return Ok(());
     } else if router.is_grpc_only() {
+        // 🔍 输出收到的头信息用于排查
+        println!("[服务端DEBUG] gRPC专用模式收到请求头信息:");
+        println!("  原始数据: {:?}", &data_str[..data_str.len().min(200)]);
+        println!("  检测到 gRPC 头部: {}", has_grpc_header);
+        println!("  头部包含 application/grpc+ratengine: {}", data_str_lower.contains("application/grpc+ratengine"));
+        println!("  头部包含 application/grpc: {}", data_str_lower.contains("application/grpc"));
+        println!("  是 HTTP/2 格式: {}", data_str.starts_with("PRI * HTTP/2.0"));
+
         if has_grpc_header {
             println!("✅ [服务端] gRPC专用模式 + gRPC头部，直接路由到gRPC处理器");
-            route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-            return Ok(());
+            // 创建 ReconstructedStream
+            let reconstructed_stream = ReconstructedStream::new(stream, detection_data);
+
+            // 直接调用 gRPC 处理器，跳过所有检测逻辑
+            if router.is_h2c_enabled() {
+                handle_h2c_connection_with_stream(reconstructed_stream, actual_remote_addr, router).await?;
+                return Ok(());
+            } else {
+                warn!("🚫 [服务端] gRPC请求需要H2C支持: {}", actual_remote_addr);
+                return Err("gRPC requires H2C support".into());
+            }
         } else {
             println!("⚠️ [服务端] gRPC专用模式但没有gRPC头部，拒绝连接");
+            println!("  完整请求头: {}", data_str);
             return Err("gRPC专用模式下需要gRPC头部".into());
         }
     }
@@ -800,13 +830,13 @@ async fn route_by_detected_protocol(
                     Err("HTTP/2 gRPC requires H2C support".into())
                 }
             } else if data_str.contains("HTTP/1.") {
-                // HTTP/1.x 格式的 gRPC - 转换为标准的 HTTP/1.1 请求并处理
-                info!("🚀 [服务端] 检测到 HTTP/1.x 格式的 gRPC，转换为 HTTP 请求处理");
+                // 普通的 HTTP/1.x 请求 - 使用 HTTP 处理器
+                info!("🚀 [服务端] 检测到普通 HTTP/1.x 请求，使用 HTTP 处理器");
 
                 // 创建 ReconstructedStream
                 let reconstructed_stream = ReconstructedStream::new(stream, buffer);
 
-                // 直接调用 HTTP 处理器，跳过协议检测
+                // 直接调用 HTTP 处理器
                 handle_http1_connection_with_stream(reconstructed_stream, remote_addr, adapter).await
             } else if !buffer.is_empty() && buffer[0] == 0x16 {
                 // TLS 上的 gRPC
