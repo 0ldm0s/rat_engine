@@ -126,7 +126,24 @@ impl RatGrpcClient {
         // 3. 启动发送/接收任务
         let connection_id = connection.connection_id.clone();
         let connection_pool = self.connection_pool.clone();
-        
+
+        // 启动处理器任务（调用 on_connected 和 on_send_task）
+        let handler_for_task = handler.clone();
+        let context_for_handler = context.clone();
+        let handler_task = tokio::spawn(async move {
+            // 调用 on_connected
+            if let Err(e) = handler_for_task.on_connected(&context_for_handler).await {
+                error!("❌ [委托模式] on_connected 处理失败: {}", e);
+                handler_for_task.on_error(&context_for_handler, e).await;
+            }
+
+            // 调用 on_send_task
+            if let Err(e) = handler_for_task.on_send_task(&context_for_handler).await {
+                error!("❌ [委托模式] on_send_task 处理失败: {}", e);
+                handler_for_task.on_error(&context_for_handler, e).await;
+            }
+        });
+
         // 启动发送任务
         let send_task = {
             let mut send_stream = send_stream;
@@ -298,7 +315,7 @@ impl RatGrpcClient {
             connection_id: connection.connection_id.clone(),
             send_task: Some(send_task),
             recv_task: Some(recv_task),
-            handler_task: None, // 不再由传输层管理业务逻辑任务
+            handler_task: Some(handler_task), // 处理器任务
             sender_tx: send_tx,
         };
         

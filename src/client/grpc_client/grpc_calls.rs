@@ -63,6 +63,29 @@ impl RatGrpcClient {
         // mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>, // 暂时注释
         dns_mapping: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
+        // 创建临时 client 实例用于获取 TLS 配置
+        let temp_client = Self {
+            client: client.clone(),
+            connect_timeout,
+            request_timeout,
+            max_idle_connections,
+            user_agent: user_agent.clone(),
+            compression_config: compression_config.clone(),
+            enable_compression,
+            enable_retry,
+            max_retries,
+            connection_pool: Arc::new(ClientConnectionPool::new(ConnectionPoolConfig::default())),
+            compression_mode,
+            request_id_counter: std::sync::atomic::AtomicU64::new(1),
+            stream_id_counter: std::sync::atomic::AtomicU64::new(1),
+            delegated_manager: Arc::new(ClientBidirectionalManager::new(Arc::new(ClientConnectionPool::new(ConnectionPoolConfig::default())))),
+            development_mode,
+            dns_mapping: dns_mapping.clone(),
+        };
+
+        // 获取 TLS 配置
+        let tls_config = temp_client.create_tls_config().ok();
+
         // 创建连接池配置
         let pool_config = ConnectionPoolConfig {
             max_connections: max_idle_connections * 2,
@@ -73,7 +96,7 @@ impl RatGrpcClient {
             max_connections_per_target: max_idle_connections,
             development_mode,
             mtls_config: None, // 暂时注释 mTLS
-            tls_config: None,
+            tls_config,
             };
 
         // 创建连接池
