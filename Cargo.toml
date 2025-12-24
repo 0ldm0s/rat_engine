@@ -85,6 +85,7 @@ h2 = "0.4"
 # TLS 支持 - 使用 rustls + ring（默认启用，支持HTTP/2和gRPC）
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 rustls-pemfile = "2.0"
+rustls-platform-verifier = "0.5"  # 系统证书验证（官方推荐）
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 # 证书处理和生成（开发环境自签名证书）
 rcgen = { version = "0.12", features = ["x509-parser"] }

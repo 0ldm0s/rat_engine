@@ -1,4 +1,6 @@
 //! gRPC 客户端核心模块
+//!
+//! 专注于 TLS/SSL 配置，mTLS 功能暂时注释
 
 use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +18,7 @@ use crate::compression::CompressionConfig;
 #[cfg(not(feature = "compression"))]
 use crate::client::grpc_builder::CompressionConfig;
 use crate::client::connection_pool::ClientConnectionPool;
-use crate::client::grpc_builder::MtlsClientConfig;
+// use crate::client::grpc_builder::MtlsClientConfig; // 暂时注释
 use crate::client::grpc_client_delegated::ClientBidirectionalManager;
 use super::GrpcCompressionMode;
 
@@ -65,8 +67,8 @@ pub struct RatGrpcClient {
     pub delegated_manager: Arc<ClientBidirectionalManager>,
     /// 是否启用开发模式（跳过证书验证）
     pub development_mode: bool,
-    /// mTLS 客户端配置
-    pub mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
+    // /// mTLS 客户端配置 (暂时注释，专注 TLS/SSL)
+    // pub mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
     /// DNS解析映射表（域名 -> 预解析IP）
     pub dns_mapping: Option<std::collections::HashMap<String, String>>,
 }
@@ -89,18 +91,18 @@ impl Clone for RatGrpcClient {
             stream_id_counter: std::sync::atomic::AtomicU64::new(0),
             delegated_manager: self.delegated_manager.clone(),
             development_mode: self.development_mode,
-            mtls_config: self.mtls_config.as_ref().map(|config| {
-                crate::client::grpc_builder::MtlsClientConfig {
-                    client_cert_chain: config.client_cert_chain.clone(),
-                    client_private_key: config.client_private_key.clone(),
-                    ca_certs: config.ca_certs.clone(),
-                    skip_server_verification: config.skip_server_verification,
-                    server_name: config.server_name.clone(),
-                    client_cert_path: config.client_cert_path.clone(),
-                    client_key_path: config.client_key_path.clone(),
-                    ca_cert_path: config.ca_cert_path.clone(),
-                }
-            }),
+            // mtls_config: self.mtls_config.as_ref().map(|config| {
+            //     crate::client::grpc_builder::MtlsClientConfig {
+            //         client_cert_chain: config.client_cert_chain.clone(),
+            //         client_private_key: config.client_private_key.clone(),
+            //         ca_certs: config.ca_certs.clone(),
+            //         skip_server_verification: config.skip_server_verification,
+            //         server_name: config.server_name.clone(),
+            //         client_cert_path: config.client_cert_path.clone(),
+            //         client_key_path: config.client_key_path.clone(),
+            //         ca_cert_path: config.ca_cert_path.clone(),
+            //     }
+            // }),
             dns_mapping: self.dns_mapping.clone(),
         }
     }

@@ -1,4 +1,6 @@
 //! gRPC 一元调用模块
+//!
+//! 专注于 TLS/SSL 配置，mTLS 功能暂时注释
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -22,7 +24,7 @@ use crate::client::grpc_builder::CompressionConfig;
 use crate::server::grpc_types::{GrpcRequest, GrpcResponse};
 use crate::server::grpc_codec::GrpcCodec;
 use crate::client::connection_pool::{ClientConnectionPool, ConnectionPoolConfig};
-use crate::client::grpc_builder::MtlsClientConfig;
+// use crate::client::grpc_builder::MtlsClientConfig; // 暂时注释
 use crate::client::grpc_client_delegated::ClientBidirectionalManager;
 use crate::utils::logger::{info, warn, debug, error};
 use super::GrpcCompressionMode;
@@ -30,10 +32,9 @@ use crate::client::grpc_client::RatGrpcClient;
 
 impl RatGrpcClient {
     /// 创建新的 gRPC 客户端实例
-    /// 
+    ///
     /// # 参数
     /// * `client` - hyper 客户端实例
-    /// * `base_uri` - 服务器基础 URI
     /// * `connect_timeout` - 连接超时时间
     /// * `request_timeout` - 请求超时时间
     /// * `max_idle_connections` - 最大空闲连接数
@@ -44,7 +45,8 @@ impl RatGrpcClient {
     /// * `max_retries` - 最大重试次数
     /// * `compression_mode` - 压缩模式
     /// * `development_mode` - 是否启用开发模式（跳过证书验证）
-    /// * `mtls_config` - mTLS 客户端配置
+    /// * `dns_mapping` - DNS 预解析映射表
+    // mTLS 配置暂时注释，专注 TLS/SSL
     #[doc(hidden)]
     pub fn new(
         client: Client<HttpConnector, Full<Bytes>>,
@@ -58,19 +60,20 @@ impl RatGrpcClient {
         max_retries: u32,
         compression_mode: GrpcCompressionMode,
         development_mode: bool,
-        mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
+        // mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>, // 暂时注释
         dns_mapping: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
         // 创建连接池配置
         let pool_config = ConnectionPoolConfig {
-            max_connections: max_idle_connections * 2, // 总连接数为空闲连接数的2倍
-            idle_timeout: Duration::from_secs(300), // 5分钟空闲超时
-            keepalive_interval: Duration::from_secs(30), // 30秒保活间隔
+            max_connections: max_idle_connections * 2,
+            idle_timeout: Duration::from_secs(300),
+            keepalive_interval: Duration::from_secs(30),
             connect_timeout,
-            cleanup_interval: Duration::from_secs(60), // 1分钟清理间隔
+            cleanup_interval: Duration::from_secs(60),
             max_connections_per_target: max_idle_connections,
-            development_mode, // 传递开发模式配置
-            mtls_config: mtls_config.clone(), // 传递 mTLS 配置给连接池
+            development_mode,
+            mtls_config: None, // 暂时注释 mTLS
+            tls_config: None,
             };
 
         // 创建连接池
@@ -97,7 +100,7 @@ impl RatGrpcClient {
             stream_id_counter: std::sync::atomic::AtomicU64::new(1),
             delegated_manager,
             development_mode,
-            mtls_config,
+            // mtls_config, // 暂时注释
             dns_mapping,
         }
     }

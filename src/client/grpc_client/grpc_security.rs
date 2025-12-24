@@ -1,125 +1,114 @@
-    //! gRPC 客户端安全模块
+//! gRPC 客户端安全模块（rustls）
+//!
+//! 专注于 TLS/SSL 配置，使用 rustls-platform-verifier 加载系统证书
 
 use std::sync::Arc;
-use std::io::Read;
 
-use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use openssl::x509::X509;
-use openssl::pkey::{PKey, Private};
-use h2;
+use rustls::{
+    ClientConfig,
+    crypto::ring::default_provider,
+    pki_types::{ServerName, CertificateDer},
+};
 
 use crate::error::{RatError, RatResult};
-use crate::client::grpc_builder::MtlsClientConfig;
-use crate::utils::logger::{info, warn, debug};
+use crate::utils::logger::{info, warn};
 use crate::client::grpc_client::RatGrpcClient;
 
+// 导入 BuilderVerifierExt trait 以使用 with_platform_verifier()
+use rustls_platform_verifier::BuilderVerifierExt;
+
 impl RatGrpcClient {
-    pub fn create_tls_config(&self) -> RatResult<SslConnector> {
-        println!("[客户端ALPN调试] 创建 TLS 配置，development_mode={}", self.development_mode);
-        // 检查是否有 mTLS 配置
-        if let Some(mtls_config) = &self.mtls_config {
-            info!("🔐 启用 mTLS 客户端证书认证");
+    pub fn create_tls_config(&self) -> RatResult<Arc<ClientConfig>> {
+        // 确保 CryptoProvider 已安装
+        crate::utils::crypto_provider::ensure_crypto_provider_installed();
 
-            // 创建 OpenSSL SSL 连接器
-            let mut ssl_connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
-
-  
-            // 配置 CA 证书
-            if let Some(ca_certs) = &mtls_config.ca_certs {
-                // 使用自定义 CA 证书
-                for ca_cert_der in ca_certs {
-                    let ca_cert = X509::from_der(ca_cert_der)
-                        .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_ca_cert_failed", &[("msg", &e.to_string())])))?;
-                    ssl_connector.cert_store_mut()
-                        .add_cert(ca_cert)
-                        .map_err(|e| RatError::TlsError(rat_embed_lang::tf("add_ca_cert_to_store_failed", &[("msg", &e.to_string())])))?;
-                }
-                info!("✅ 已加载 {} 个自定义 CA 证书", ca_certs.len());
-            } else {
-                // 使用系统默认根证书
-                ssl_connector.set_default_verify_paths()
-                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_default_cert_path_failed", &[("msg", &e.to_string())])))?;
-                info!("✅ 已加载系统默认根证书");
-            }
-
-            // 配置客户端证书和私钥
-            let client_cert_chain = &mtls_config.client_cert_chain;
-            let client_private_key = mtls_config.client_private_key.clone();
-
-            // 使用第一个证书作为客户端证书
-            if let Some(client_cert_der) = client_cert_chain.first() {
-                let client_cert = X509::from_der(client_cert_der)
-                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_client_cert_failed", &[("msg", &e.to_string())])))?;
-
-                // 从私钥中提取私钥
-                let private_key = PKey::private_key_from_der(&client_private_key)
-                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("parse_private_key_failed", &[("msg", &e.to_string())])))?;
-
-                ssl_connector.set_certificate(&client_cert)
-                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_client_cert_failed", &[("msg", &e.to_string())])))?;
-                ssl_connector.set_private_key(&private_key)
-                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_private_key_failed", &[("msg", &e.to_string())])))?;
-                ssl_connector.check_private_key()
-                    .map_err(|e| RatError::TlsError(rat_embed_lang::tf("key_cert_match_check_failed", &[("msg", &e.to_string())])))?;
-
-                info!("✅ 客户端证书配置完成");
-            } else {
-                return Err(RatError::TlsError("未找到客户端证书".to_string()));
-            }
-
-            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
-            ssl_connector.set_alpn_protos(b"\x02h2")?;
-            println!("[客户端ALPN调试] mTLS 模式设置 ALPN 协议: h2");
-
-            if mtls_config.skip_server_verification {
-                // 跳过服务器证书验证（仅用于测试）
-                warn!("⚠️  警告：已启用跳过服务器证书验证模式！仅用于测试环境！");
-                ssl_connector.set_verify(SslVerifyMode::NONE);
-            } else {
-                // 正常的服务器证书验证
-                ssl_connector.set_verify(SslVerifyMode::PEER);
-            }
-
-            info!("✅ mTLS 客户端配置完成");
-            Ok(ssl_connector.build())
-        } else if self.development_mode {
-            // 开发模式：跳过证书验证
+        if self.development_mode {
             warn!("⚠️  警告：gRPC 客户端已启用开发模式，将跳过所有 TLS 证书验证！仅用于开发环境！");
-
-            let mut ssl_connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
-
-            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
-            ssl_connector.set_alpn_protos(b"\x02h2")?;
-            println!("[客户端ALPN调试] 开发模式设置 ALPN 协议: h2");
-
-            // 跳过证书验证
-            ssl_connector.set_verify(SslVerifyMode::NONE);
-
-            // 开发模式下保持标准协议版本，仅跳过证书验证
-
-            info!("✅ 开发模式 SSL 连接器配置完成");
-            Ok(ssl_connector.build())
+            return self.create_development_config();
         } else {
-            // 非开发模式：严格证书验证
-            let mut ssl_connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("create_ssl_connector_failed", &[("msg", &e.to_string())])))?;
-
-  
-            // 设置系统默认证书路径
-            ssl_connector.set_default_verify_paths()
-                .map_err(|e| RatError::TlsError(rat_embed_lang::tf("set_default_cert_path_failed", &[("msg", &e.to_string())])))?;
-
-            // 设置 ALPN 协议 - gRPC 只支持 HTTP/2
-            ssl_connector.set_alpn_protos(b"\x02h2")?;
-            println!("[客户端ALPN调试] 标准模式设置 ALPN 协议: h2");
-
-            // 严格证书验证
-            ssl_connector.set_verify(SslVerifyMode::PEER);
-
-            info!("✅ 标准模式 SSL 连接器配置完成");
-            Ok(ssl_connector.build())
+            info!("✅ 使用标准 TLS 配置（系统证书）");
+            return self.create_standard_config();
         }
+    }
+
+    fn create_development_config(&self) -> RatResult<Arc<ClientConfig>> {
+        // 开发模式：跳过证书验证
+        let config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerification))
+            .with_no_client_auth();
+
+        info!("✅ 开发模式 TLS 配置完成");
+        Ok(Arc::new(config))
+    }
+
+    fn create_standard_config(&self) -> RatResult<Arc<ClientConfig>> {
+        // 使用 rustls-platform-verifier 加载系统证书
+        // 这会自动使用操作系统的原生证书存储：
+        // - Windows: Crypt32/Schannel
+        // - macOS: Security Framework
+        // - Linux: OpenSSL/系统证书存储
+        // - Android/iOS: 平台原生 API
+        let provider = Arc::new(default_provider());
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_platform_verifier()
+            .with_no_client_auth();
+
+        info!("✅ 标准模式 TLS 配置完成（使用系统证书）");
+        Ok(Arc::new(config))
+    }
+}
+
+/// 跳过证书验证（仅用于开发/测试）
+#[derive(Debug)]
+struct NoVerification;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA1,
+            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::ED448,
+        ]
     }
 }

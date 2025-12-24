@@ -234,6 +234,13 @@ impl From<String> for RatError {
     }
 }
 
+// rustls 错误转换
+impl From<rustls::Error> for RatError {
+    fn from(err: rustls::Error) -> Self {
+        RatError::TlsError(format!("rustls 错误: {}", err))
+    }
+}
+
 // OpenSSL 相关的错误转换已移除，现在使用 rustls
 // impl From<openssl::error::ErrorStack> for RatError { ... }
 
