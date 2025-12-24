@@ -4,7 +4,6 @@
 
 use rat_engine::server::{
     Router,
-    config::ServerConfig,
     http_request::HttpRequest,
     global_sse_manager::get_global_sse_manager,
 };
@@ -126,17 +125,12 @@ fn broadcast_to_room(room_id: u32, event_type: &str, data: &Value) {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化 CryptoProvider
-    rat_engine::utils::crypto_provider::ensure_crypto_provider_installed();
-
-    // 创建服务器配置
-    let addr = "127.0.0.1:3001".parse().unwrap();
-    let server_config = ServerConfig::new(addr, 4)
-        .with_log_config(rat_engine::utils::logger::LogConfig::default());
-
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 创建路由器
     let mut router = Router::new();
+
+    // 启用 HTTP 专用模式
+    router.enable_http_only();
 
     // 注册主页路由 - 登录页面
     router.add_route(
@@ -574,7 +568,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("💬 SSE 聊天室服务器启动中...");
-    println!("📡 服务器地址: http://127.0.0.1:3001");
+    println!("📡 服务器地址: http://0.0.0.0:3001");
     println!("🏠 登录页面: http://127.0.0.1:3001/");
     println!("💭 聊天页面: http://127.0.0.1:3001/chat");
     println!();
@@ -585,17 +579,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("按 Ctrl+C 停止服务器");
 
-    // 启动服务器
+    // 启动服务器（HTTP only，绑定 0.0.0.0）
     let engine = RatEngine::builder()
-        .with_log_config(rat_engine::utils::logger::LogConfig::default())
+        .worker_threads(4)
+        .enable_logger()
         .router(router)
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await
-        .map_err(|e| format!("启用开发模式失败: {}", e))?
-        .build()
-        .map_err(|e| format!("构建引擎失败: {}", e))?;
+        .build()?;
 
-    engine.start("127.0.0.1".to_string(), 3001).await
-        .map_err(|e| format!("启动服务器失败: {}", e))?;
+    engine.start("0.0.0.0".to_string(), 3001).await?;
 
     Ok(())
 }
