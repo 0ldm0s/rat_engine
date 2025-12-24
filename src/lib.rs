@@ -42,8 +42,6 @@ pub mod python_api;
 
 // 导出核心类型
 pub use server::{ServerConfig, Router, WorkerPool};
-#[allow(deprecated)]
-pub use server::run_server_with_router;
 pub use engine::RatEngine;
 
 // 重新导出 hyper 常用类型，让用户无需直接引入 hyper

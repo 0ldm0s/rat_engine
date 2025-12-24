@@ -1764,14 +1764,22 @@ impl Router {
     }
 
     /// 启用 H2C
+    ///
+    /// ⚠️ **已废弃**: H2C 不再支持，gRPC 强制使用 TLS
+    /// 此方法已无效果，仅为保持 API 兼容性而保留
+    #[deprecated(note = "H2C 不再支持，gRPC 强制使用 TLS")]
     pub fn enable_h2c(&mut self) -> &mut Self {
-        self.h2c_enabled = true;
+        crate::utils::logger::warn!("⚠️ enable_h2c() 已废弃，H2C 不再支持。gRPC 强制使用 TLS。");
+        // 不再启用 H2C
         self
     }
 
     /// 禁用 H2C
+    ///
+    /// ⚠️ **已废弃**: H2C 默认已禁用，此方法已无效果
+    #[deprecated(note = "H2C 默认已禁用")]
     pub fn disable_h2c(&mut self) -> &mut Self {
-        self.h2c_enabled = false;
+        // H2C 默认已禁用，无需操作
         self
     }
 
@@ -1795,8 +1803,12 @@ impl Router {
     }
 
     /// 检查是否启用了 H2C
+    ///
+    /// ⚠️ **已废弃**: H2C 不再支持，gRPC 强制使用 TLS
+    /// 此方法始终返回 false，仅为保持 API 兼容性而保留
     pub fn is_h2c_enabled(&self) -> bool {
-        self.h2c_enabled
+        // H2C 已废弃，gRPC 强制使用 TLS
+        false
     }
 
     /// 检查是否为 HTTP 专用模式

@@ -234,11 +234,8 @@ impl From<String> for RatError {
     }
 }
 
-impl From<openssl::error::ErrorStack> for RatError {
-    fn from(err: openssl::error::ErrorStack) -> Self {
-        RatError::TlsError(format!("OpenSSL error: {}", err))
-    }
-}
+// OpenSSL 相关的错误转换已移除，现在使用 rustls
+// impl From<openssl::error::ErrorStack> for RatError { ... }
 
 #[cfg(feature = "cache")]
 impl From<rat_memcache::error::CacheError> for RatError {

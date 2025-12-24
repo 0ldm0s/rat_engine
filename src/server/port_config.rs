@@ -83,33 +83,22 @@ impl CertificateConfig {
     
     /// 转换为证书管理器配置
     pub fn to_cert_manager_config(&self) -> CertManagerConfig {
-        CertManagerConfig {
-            development_mode: false,
-            cert_path: Some(self.cert_path.clone()),
-            key_path: Some(self.key_path.clone()),
-            ca_path: self.ca_path.clone(),
-            validity_days: 3650, // 严格验证模式下不使用，但需要设置默认值
-            hostnames: self.hostnames.clone(),
-            // ACME 相关字段设置为默认值
-            acme_enabled: false,
-            acme_production: false,
-            acme_email: None,
-            cloudflare_api_token: None,
-            acme_renewal_days: 30,
-            acme_cert_dir: None,
-            // mTLS 相关字段设置为默认值
-            mtls_enabled: false,
-            mtls_mode: None,
-            auto_generate_client_cert: false,
-            client_cert_path: None,
-            client_key_path: None,
-            client_ca_path: None,
-            client_cert_subject: None,
-            auto_refresh_enabled: true,
-            refresh_check_interval: 3600,
-            force_cert_rotation: false,
-            mtls_whitelist_paths: Vec::new(),
-        }
+        // 创建 CertConfig
+        let cert_config = crate::server::cert_manager::CertConfig::from_paths(
+            self.cert_path.clone(),
+            self.key_path.clone(),
+        )
+        .with_domains(self.hostnames.clone());
+
+        // 添加 CA 证书路径（如果有）
+        let cert_config = if let Some(ca_path) = &self.ca_path {
+            cert_config.with_ca(ca_path)
+        } else {
+            cert_config
+        };
+
+        // 使用同端口模式（shared）
+        CertManagerConfig::shared(cert_config)
     }
     
     /// 验证证书文件是否存在

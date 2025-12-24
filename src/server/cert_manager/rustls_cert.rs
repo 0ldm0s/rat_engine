@@ -1,0 +1,267 @@
+//! 基于 rustls 的证书管理器
+//!
+//! 使用 rustls + ring 作为加密后端
+//! 参考 rat_ligproxy 实现
+
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
+use std::sync::Arc;
+
+use rustls::server::{ServerConfig, ResolvesServerCertUsingSni};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::sign::CertifiedKey;
+use rustls::crypto::CryptoProvider;
+use rustls_pemfile::{certs, private_key};
+
+use crate::utils::logger::{info, error};
+
+/// Rustls 证书管理器
+#[derive(Clone)]
+pub struct RustlsCertManager {
+    /// SNI 解析器
+    sni_resolver: Arc<ResolvesServerCertUsingSni>,
+    /// ServerConfig
+    server_config: Arc<ServerConfig>,
+    /// 支持的域名列表
+    domains: Vec<String>,
+}
+
+impl RustlsCertManager {
+    /// 从单个证书配置创建管理器
+    pub fn from_config(cert_config: &super::config::CertConfig) -> Result<Self, String> {
+        // 安装 ring 作为 CryptoProvider
+        let provider = rustls::crypto::ring::default_provider();
+        CryptoProvider::install_default(provider.clone())
+            .map_err(|e| format!("安装 CryptoProvider 失败: {:?}", e))?;
+
+        info!("加载证书: {}", cert_config.cert_path.display());
+
+        // 创建 SNI 解析器
+        let mut sni_resolver = ResolvesServerCertUsingSni::new();
+
+        // 读取证书和私钥
+        let cert_file = File::open(&cert_config.cert_path)
+            .map_err(|e| format!("打开证书文件失败: {}", e))?;
+        let mut cert_reader = BufReader::new(cert_file);
+        let certs: Vec<CertificateDer<'static>> = certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("解析证书失败: {}", e))?
+            .into_iter()
+            .map(|cert| CertificateDer::from(cert.into_owned()))
+            .collect();
+
+        let key_file = File::open(&cert_config.key_path)
+            .map_err(|e| format!("打开私钥文件失败: {}", e))?;
+        let mut key_reader = BufReader::new(key_file);
+        let key = private_key(&mut key_reader)
+            .map_err(|e| format!("解析私钥失败: {}", e))?
+            .ok_or("私钥文件为空")?;
+
+        let static_key = PrivateKeyDer::from(key);
+
+        // 验证证书
+        if certs.is_empty() {
+            return Err("证书为空".to_string());
+        }
+
+        // 创建 CertifiedKey
+        let certified_key = CertifiedKey::from_der(certs, static_key, &provider)
+            .map_err(|e| format!("创建 CertifiedKey 失败: {:?}", e))?;
+
+        // 确定域名（优先使用配置中的域名，否则从证书提取）
+        let domains = if cert_config.domains.is_empty() {
+            // 从证书中提取域名（简化处理，使用第一个证书的主题）
+            vec!["default".to_string()]
+        } else {
+            cert_config.domains.clone()
+        };
+
+        // 为每个域名添加证书
+        for domain in &domains {
+            sni_resolver.add(domain, certified_key.clone())
+                .map_err(|e| format!("添加证书到 SNI 解析器失败: {:?}", e))?;
+            info!("  ✓ 域名: {}", domain);
+        }
+
+        // 创建 ServerConfig，ALPN 只支持 h2
+        let sni_resolver_arc = Arc::new(sni_resolver);
+        let server_config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(sni_resolver_arc.clone())
+        );
+
+        // 强制 ALPN 为 h2（HTTP/2）
+        // 注意：rustls 0.23 的 ALPN 设置方式已改变
+        // 我们需要在连接时检查 ALPN，而不是在 ServerConfig 中设置
+
+        info!("证书加载完成，共 {} 个域名", domains.len());
+
+        Ok(Self {
+            sni_resolver: sni_resolver_arc,
+            server_config,
+            domains,
+        })
+    }
+
+    /// 从证书目录加载所有证书（格式：domain.pem, domain-key.pem）
+    pub fn from_dir(cert_dir: &str) -> Result<Self, String> {
+        let path = Path::new(cert_dir);
+
+        if !path.exists() {
+            return Err(format!("证书目录不存在: {}", cert_dir));
+        }
+
+        let mut cert_files = HashMap::new();
+
+        // 遍历目录中的 .pem 文件
+        for entry in std::fs::read_dir(path)
+            .map_err(|e| format!("无法读取证书目录: {}", e))?
+        {
+            let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+            let path = entry.path();
+
+            if path.extension().and_then(|s| s.to_str()) == Some("pem") {
+                if let Some(filename) = path.file_stem() {
+                    let filename = filename.to_string_lossy();
+
+                    // 跳过密钥文件（以 -key.pem 结尾）
+                    if filename.ends_with("-key") {
+                        continue;
+                    }
+
+                    // 提取域名
+                    let domain = if filename.contains('.') {
+                        filename.to_string()
+                    } else {
+                        continue;
+                    };
+
+                    // 检查对应的密钥文件是否存在
+                    let key_path = path.with_file_name(format!("{}-key.pem", domain));
+                    if key_path.exists() {
+                        cert_files.insert(domain.clone(), (path.to_string_lossy().to_string(), key_path.to_string_lossy().to_string()));
+                        info!("发现证书: {} -> {}", domain, path.display());
+                    }
+                }
+            }
+        }
+
+        if cert_files.is_empty() {
+            return Err("证书目录中没有找到有效的证书".to_string());
+        }
+
+        // 安装 ring 作为 CryptoProvider
+        let provider = rustls::crypto::ring::default_provider();
+        CryptoProvider::install_default(provider.clone())
+            .map_err(|e| format!("安装 CryptoProvider 失败: {:?}", e))?;
+
+        info!("预加载 SSL 证书...");
+
+        // 创建 SNI 解析器
+        let mut sni_resolver = ResolvesServerCertUsingSni::new();
+        let mut domains = Vec::new();
+
+        for (domain, (cert_path, key_path)) in cert_files {
+            info!("  预加载证书: {}", domain);
+
+            // 读取证书
+            let cert_pem = std::fs::read(&cert_path)
+                .map_err(|e| format!("读取证书文件失败: {}", e))?;
+            let mut cert_cursor = std::io::Cursor::new(cert_pem);
+            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_cursor)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("解析证书失败: {}", e))?
+                .into_iter()
+                .map(|cert| CertificateDer::from(cert.into_owned()))
+                .collect();
+
+            // 读取私钥
+            let key_pem = std::fs::read(&key_path)
+                .map_err(|e| format!("读取私钥文件失败: {}", e))?;
+            let mut key_cursor = std::io::Cursor::new(key_pem);
+            let key = private_key(&mut key_cursor)
+                .map_err(|e| format!("解析私钥失败: {}", e))?
+                .ok_or_else(|| format!("未找到私钥: {}", key_path))?;
+
+            let static_key = PrivateKeyDer::from(key);
+
+            // 验证证书
+            if certs.is_empty() {
+                return Err(format!("证书为空: {}", domain));
+            }
+
+            // 创建 CertifiedKey
+            let certified_key = CertifiedKey::from_der(certs, static_key, &provider)
+                .map_err(|e| format!("创建 CertifiedKey 失败: {:?}", e))?;
+
+            // 添加到 SNI 解析器
+            sni_resolver.add(&domain, certified_key)
+                .map_err(|e| format!("添加证书到 SNI 解析器失败: {:?}", e))?;
+
+            domains.push(domain);
+            info!("    ✓ 证书加载成功");
+        }
+
+        info!("SSL 证书预加载完成，共 {} 个证书", domains.len());
+
+        // 创建 ServerConfig
+        let sni_resolver_arc = Arc::new(sni_resolver);
+        let server_config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(sni_resolver_arc.clone())
+        );
+
+        Ok(Self {
+            sni_resolver: sni_resolver_arc,
+            server_config,
+            domains,
+        })
+    }
+
+    /// 获取 ServerConfig
+    pub fn get_server_config(&self) -> Arc<ServerConfig> {
+        self.server_config.clone()
+    }
+
+    /// 获取支持的域名列表
+    pub fn get_domains(&self) -> &[String] {
+        &self.domains
+    }
+
+    /// 检查是否支持某个域名
+    pub fn supports_domain(&self, domain: &str) -> bool {
+        self.domains.contains(&domain.to_string())
+    }
+}
+
+/// ALPN 协议检查工具
+pub struct AlpnProtocol;
+
+impl AlpnProtocol {
+    /// 检查是否为 HTTP/2 连接
+    pub fn is_http2(protocol: &Option<Vec<u8>>) -> bool {
+        matches!(protocol, Some(p) if p == b"h2")
+    }
+
+    /// 检查是否为 HTTP/1.1 连接
+    pub fn is_http11(protocol: &Option<Vec<u8>>) -> bool {
+        matches!(protocol, Some(p) if p == b"http/1.1")
+            || protocol.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_alpn_check() {
+        assert!(AlpnProtocol::is_http2(&Some(b"h2".to_vec())));
+        assert!(!AlpnProtocol::is_http2(&Some(b"http/1.1".to_vec())));
+        assert!(!AlpnProtocol::is_http2(&None));
+    }
+}

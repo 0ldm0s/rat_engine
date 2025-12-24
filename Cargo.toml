@@ -82,9 +82,10 @@ jsonwebtoken = "9.3.1"
 psi_detector = "0.1.3"
 # HTTP/2 和 gRPC 支持
 h2 = "0.4"
-# TLS 支持（默认启用，支持HTTP/2和gRPC）
-openssl = { version = "0.10" }
-tokio-openssl = "0.6"
+# TLS 支持 - 使用 rustls + ring（默认启用，支持HTTP/2和gRPC）
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rustls-pemfile = "2.0"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 # 证书处理和生成（开发环境自签名证书）
 rcgen = { version = "0.12", features = ["x509-parser"] }
 x509-parser = { version = "0.16" }
@@ -135,8 +136,8 @@ compression-zstd = ["compression", "zstd"]  # + Zstd
 # 证书和TLS功能
 tls = []  # TLS支持（默认启用）
 acme = ["acme_commander"]  # ACME自动证书
-# 静态编译支持
-static-openssl = ["openssl/vendored"]  # 静态编译OpenSSL（用于release模式）
+# 静态编译支持（rustls 默认静态编译）
+static = []  # 静态编译（已移除 openssl 依赖）
 
 # 开发功能
 dev = []  # 开发环境（已包含在默认特性中）

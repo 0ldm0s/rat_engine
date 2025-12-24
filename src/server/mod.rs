@@ -12,7 +12,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use hyper::service::service_fn;
 use hyper_util::server::conn::auto::Builder;
-use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -22,6 +21,13 @@ use bytes;
 use http_body_util;
 use psi_detector::core::protocol::ProtocolType;
 use crate::utils::logger::{debug, info, warn, error};
+
+use hyper_util::rt::TokioIo;
+use tokio_rustls::server::TlsStream;
+
+// ============ 已移除 H2C 支持 ============
+// gRPC 服务端强制使用 TLS (HTTP/2-only)
+// 不再支持 H2C (HTTP/2 over cleartext)
 
 /// 重新构造的流，包含预读的数据
 struct ReconstructedStream {
@@ -188,29 +194,16 @@ async fn run_separated_server(config: ServerConfig, router: Router) -> crate::er
             alpn_protocols.push(b"h2".to_vec());
             protocols.push("HTTP/2 (TLS)");
         }
-        
-        // 只有在没有 gRPC 方法且未启用 H2 或同时启用了 H2C 时才添加 HTTP/1.1 作为回退
-        // gRPC 强制要求 HTTP/2，所以不能回退到 HTTP/1.1
-        if !has_grpc_methods && (!router.is_h2_enabled() || router.is_h2c_enabled()) {
-            alpn_protocols.push(b"http/1.1".to_vec());
-            protocols.push("HTTPS/1.1");
-        }
-        
-        if let Some(cert_manager) = router.get_cert_manager() {
-            if let Ok(mut cert_manager_guard) = cert_manager.write() {
-                if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
-                    crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
-                    return Err(crate::error::RatError::ConfigError(rat_embed_lang::tf("alpn_config_failed", &[("msg", &e.to_string())])));
-                }
-                crate::utils::logger::info!("✅ ALPN 协议配置成功");
-            }
-        }
+
+        // 注意：rustls 的 ALPN 在创建 ServerConfig 时已经设置（只支持 h2）
+        // 不需要在这里配置 ALPN
     }
-    
-    if router.is_h2c_enabled() {
-        protocols.push("H2C");
-    }
-    
+
+    // H2C 已移除，gRPC 强制使用 TLS
+    // if router.is_h2c_enabled() {
+    //     protocols.push("H2C");
+    // }
+
     if protocols.is_empty() {
         protocols.push("HTTP/1.1");
     }
@@ -339,21 +332,94 @@ async fn handle_grpc_connection(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     crate::utils::logger::debug!("🔗 [gRPC] 新连接: {}", remote_addr);
 
-    // 在分端口模式下，gRPC 端口只处理 gRPC 协议
-    // 不进行协议检测，直接根据配置处理
-    // detect_and_handle_protocol(stream, remote_addr, router, adapter).await
+    // gRPC 强制要求 TLS 证书
+    let cert_manager = router.get_cert_manager()
+        .unwrap_or_else(|| {
+            panic!("gRPC 服务必须配置 TLS 证书！请在启动前配置证书。");
+        });
 
-    // 如果启用了 TLS，使用 TLS 处理
-    if router.get_cert_manager().is_some() {
-        debug!("🔐 [gRPC] 使用 TLS 处理连接: {}", remote_addr);
-        // TLS 模式下仍需要协议检测来处理 TLS 握手
-        let cert_manager = router.get_cert_manager();
-        detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, cert_manager).await
-    } else {
-        debug!("🌊 [gRPC] 使用 H2C 处理连接: {}", remote_addr);
-        // 直接使用 H2C 处理，跳过协议检测
-        handle_h2c_connection_with_stream(stream, remote_addr, router).await
+    debug!("🔐 [gRPC] 使用 TLS 处理连接: {}", remote_addr);
+    handle_grpc_tls_connection(stream, remote_addr, router, cert_manager).await
+}
+
+/// 处理 gRPC TLS 连接
+async fn handle_grpc_tls_connection(
+    stream: tokio::net::TcpStream,
+    remote_addr: SocketAddr,
+    router: Arc<Router>,
+    cert_manager: Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use h2::server;
+
+    info!("🔐 [gRPC] 开始 TLS 握手: {}", remote_addr);
+
+    // 获取 gRPC 专用的 ServerConfig
+    let server_config = {
+        let cert_manager_guard = cert_manager.read()
+            .map_err(|e| format!("无法获取证书管理器读锁: {}", e))?;
+        cert_manager_guard.get_grpc_server_config()
+    };
+
+    // 使用 tokio-rustls 进行 TLS 握手
+    let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+    let tls_stream = acceptor.accept(stream).await
+        .map_err(|e| {
+            error!("❌ [gRPC] TLS 握手失败: {}", e);
+            format!("TLS 握手失败: {}", e)
+        })?;
+
+    info!("✅ [gRPC] TLS 握手成功: {}", remote_addr);
+
+    // 获取 ALPN 协议
+    let (_tcp_stream, conn) = tls_stream.get_ref();
+    let alpn_protocol = conn.alpn_protocol().map(|p| p.to_vec());
+    info!("🔐 [gRPC] ALPN 协议: {:?}", alpn_protocol);
+
+    // 检查 ALPN 是否为 h2，gRPC 强制要求 HTTP/2
+    if !crate::server::cert_manager::rustls_cert::AlpnProtocol::is_http2(&alpn_protocol) {
+        error!("❌ [gRPC] 拒绝非 HTTP/2 连接: ALPN={:?}, 客户端={}", alpn_protocol, remote_addr);
+        return Err(format!("gRPC 只支持 HTTP/2，客户端协商的 ALPN 协议: {:?}", alpn_protocol).into());
     }
+
+    info!("✅ [gRPC] HTTP/2 连接验证通过: {}", remote_addr);
+
+    // 在 TLS 连接上建立 HTTP/2（内联处理）
+    debug!("🔍 [gRPC] 开始处理 HTTP/2 连接: {}", remote_addr);
+
+    let mut h2_builder = h2::server::Builder::default();
+    h2_builder.max_frame_size(1024 * 1024);
+
+    let mut connection = h2_builder.handshake(tls_stream).await
+        .map_err(|e| {
+            error!("❌ [gRPC] HTTP/2 握手失败: {}", e);
+            format!("HTTP/2 握手失败: {}", e)
+        })?;
+
+    info!("✅ [gRPC] HTTP/2 连接已建立: {}", remote_addr);
+
+    // 处理 HTTP/2 请求
+    while let Some(request_result) = connection.accept().await {
+        match request_result {
+            Ok((request, respond)) => {
+                debug!("📥 [gRPC] 接收到 HTTP/2 请求: {} {}",
+                    request.method(), request.uri().path());
+
+                let router_clone = router.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = handle_h2_request(request, respond, remote_addr, router_clone).await {
+                        error!("❌ [gRPC] 处理 HTTP/2 请求失败: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                error!("❌ [gRPC] 接受 HTTP/2 请求失败: {}", e);
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// 处理单个连接，支持 HTTP/1.1、HTTP/2 和 gRPC
@@ -364,8 +430,7 @@ async fn handle_connection(
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("🔗 [服务端] 新连接: {}", remote_addr);
-    debug!("🔍 [服务端] H2C 启用状态: {}", router.is_h2c_enabled());
-    
+
     // 始终进行协议检测，以支持 TLS、HTTP/2 等协议
     debug!("🔍 [服务端] 开始协议检测: {}", remote_addr);
     
@@ -579,14 +644,14 @@ pub async fn detect_and_handle_protocol_with_tls(
             if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
                 println!("✅ [服务端] 通过 HAProxy 头部识别为 gRPC 请求");
 
-                // gRPC 请求必须使用 HTTP/2
-                if router.is_h2c_enabled() {
-                    println!("✅ [服务端] gRPC 请求强制路由到 HTTP/2 处理器");
+                // gRPC 请求必须使用 TLS
+                if tls_cert_manager.is_some() {
+                    println!("✅ [服务端] gRPC 请求使用 TLS 处理");
                     route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
                     return Ok(());
                 } else {
-                    println!("❌ [服务端] gRPC 请求需要 H2C 支持，但未启用");
-                    return Err("gRPC requires H2C to be enabled".into());
+                    println!("❌ [服务端] gRPC 请求需要 TLS 证书，但未配置");
+                    return Err("gRPC requires TLS certificate".into());
                 }
             }
 
@@ -631,8 +696,11 @@ pub async fn detect_and_handle_protocol_with_tls(
 
     // 打印接收到的头部信息
     println!("[服务端DEBUG] 接收到的原始数据 (前200字节):");
-    println!("  原始: {:?}", &data_str[..data_str.len().min(200)]);
-    println!("  小写: {:?}", &data_str_lower[..data_str_lower.len().min(200)]);
+    // 安全地截取字符串（按字符边界）
+    let safe_len = data_str.chars().take(200).collect::<String>();
+    println!("  原始: {:?}", safe_len);
+    let safe_lower = data_str_lower.chars().take(200).collect::<String>();
+    println!("  小写: {:?}", safe_lower);
 
     let has_grpc_header = data_str_lower.contains("application/grpc+ratengine") ||
                           data_str_lower.contains("application/grpc") ||
@@ -643,32 +711,16 @@ pub async fn detect_and_handle_protocol_with_tls(
         route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
         return Ok(());
     } else if router.is_grpc_only() {
-        // 🔍 输出收到的头信息用于排查
-        println!("[服务端DEBUG] gRPC专用模式收到请求头信息:");
-        println!("  原始数据: {:?}", &data_str[..data_str.len().min(200)]);
-        println!("  检测到 gRPC 头部: {}", has_grpc_header);
-        println!("  头部包含 application/grpc+ratengine: {}", data_str_lower.contains("application/grpc+ratengine"));
-        println!("  头部包含 application/grpc: {}", data_str_lower.contains("application/grpc"));
-        println!("  是 HTTP/2 格式: {}", data_str.starts_with("PRI * HTTP/2.0"));
+        // gRPC 专用模式强制要求 TLS 证书
+        let cert_manager = tls_cert_manager
+            .as_ref()
+            .unwrap_or_else(|| {
+                panic!("gRPC 专用模式必须配置 TLS 证书！请在启动前配置证书。");
+            });
 
-        if has_grpc_header {
-            println!("✅ [服务端] gRPC专用模式 + gRPC头部，直接路由到gRPC处理器");
-            // 创建 ReconstructedStream
-            let reconstructed_stream = ReconstructedStream::new(stream, detection_data);
-
-            // 直接调用 gRPC 处理器，跳过所有检测逻辑
-            if router.is_h2c_enabled() {
-                handle_h2c_connection_with_stream(reconstructed_stream, actual_remote_addr, router).await?;
-                return Ok(());
-            } else {
-                warn!("🚫 [服务端] gRPC请求需要H2C支持: {}", actual_remote_addr);
-                return Err("gRPC requires H2C support".into());
-            }
-        } else {
-            println!("⚠️ [服务端] gRPC专用模式但没有gRPC头部，拒绝连接");
-            println!("  完整请求头: {}", data_str);
-            return Err("gRPC专用模式下需要gRPC头部".into());
-        }
+        println!("✅ [服务端] gRPC专用模式，使用 TLS 处理连接");
+        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, Some(cert_manager.clone())).await;
+        return Ok(());
     }
 
     // 执行协议检测
@@ -801,15 +853,9 @@ async fn route_by_detected_protocol(
                 let reconstructed_stream = ReconstructedStream::new(stream, buffer);
                 handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
             } else {
-                // 这是 cleartext HTTP/2 (H2C)
-                if router.is_h2c_enabled() {
-                    debug!("🚀 [服务端] 路由到 HTTP/2 (H2C) 处理器: {}", remote_addr);
-                    let reconstructed_stream = ReconstructedStream::new(stream, buffer);
-                    handle_h2c_connection_with_stream(reconstructed_stream, remote_addr, router).await
-                } else {
-                    warn!("🚫 [服务端] 检测到 HTTP/2 连接但 H2C 未启用，拒绝连接: {}", remote_addr);
-                    Err("HTTP/2 over cleartext (H2C) 未启用".into())
-                }
+                // 拒绝 cleartext HTTP/2 (H2C)，强制要求 TLS
+                warn!("🚫 [服务端] 拒绝 cleartext HTTP/2 (H2C) 连接，gRPC 必须使用 TLS: {}", remote_addr);
+                Err("HTTP/2 over cleartext (H2C) 不再支持，请使用 TLS".into())
             }
         }
         ProtocolType::GRPC => {
@@ -819,16 +865,11 @@ async fn route_by_detected_protocol(
             // 检查数据格式以决定使用哪种处理器
             let data_str = String::from_utf8_lossy(buffer);
 
-            if data_str.starts_with("PRI * HTTP/2.0") {
-                // HTTP/2 格式的 gRPC - 使用 H2C 处理器
-                debug!("🚀 [服务端] 检测到 HTTP/2 格式的 gRPC");
-                if router.is_h2c_enabled() {
-                    let reconstructed_stream = ReconstructedStream::new(stream, buffer);
-                    handle_h2c_connection_with_stream(reconstructed_stream, remote_addr, router).await
-                } else {
-                    warn!("🚫 [服务端] HTTP/2 格式的 gRPC 需要 H2C 支持: {}", remote_addr);
-                    Err("HTTP/2 gRPC requires H2C support".into())
-                }
+            if !buffer.is_empty() && buffer[0] == 0x16 {
+                // TLS 上的 gRPC
+                info!("🔐 [服务端] 检测到 TLS 上的 gRPC，进行 TLS 握手: {}", remote_addr);
+                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
             } else if data_str.contains("HTTP/1.") {
                 // 普通的 HTTP/1.x 请求 - 使用 HTTP 处理器
                 info!("🚀 [服务端] 检测到普通 HTTP/1.x 请求，使用 HTTP 处理器");
@@ -838,15 +879,10 @@ async fn route_by_detected_protocol(
 
                 // 直接调用 HTTP 处理器
                 handle_http1_connection_with_stream(reconstructed_stream, remote_addr, adapter).await
-            } else if !buffer.is_empty() && buffer[0] == 0x16 {
-                // TLS 上的 gRPC
-                info!("🔐 [服务端] 检测到 TLS 上的 gRPC，进行 TLS 握手: {}", remote_addr);
-                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
-                handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
             } else {
-                // 无法识别的格式
-                warn!("🚫 [服务端] 无法识别 gRPC 协议格式: {}", remote_addr);
-                Err("无法识别 gRPC 协议格式".into())
+                // gRPC 必须使用 TLS，拒绝 cleartext 连接
+                warn!("🚫 [服务端] 拒绝 cleartext gRPC 连接，gRPC 必须使用 TLS: {}", remote_addr);
+                Err("gRPC 必须使用 TLS，不再支持 H2C".into())
             }
         }
         ProtocolType::WebSocket => {
@@ -868,7 +904,7 @@ async fn route_by_detected_protocol(
 
 
 
-/// 处理 TLS 连接
+/// 处理 TLS 连接（HTTP，使用 rustls）
 async fn handle_tls_connection<S>(
     stream: S,
     remote_addr: SocketAddr,
@@ -879,77 +915,89 @@ async fn handle_tls_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    use tokio_openssl::SslStream;
-    
+    info!("🔐 [服务端] 开始 TLS 握手: {}", remote_addr);
+
     // 获取证书管理器
     let cert_manager = cert_manager
         .ok_or("TLS 连接需要证书管理器，但未配置")?;
-    
-    // 获取服务器配置
+
+    // 获取 HTTP 的 ServerConfig（如果没有证书，返回 None，允许降级到 HTTP/1.1）
     let server_config = {
         let cert_manager_guard = cert_manager.read()
             .map_err(|e| format!("无法获取证书管理器读锁: {}", e))?;
-        cert_manager_guard.get_server_config()
-            .ok_or("证书管理器未初始化服务器配置")?
+        cert_manager_guard.get_http_server_config()
     };
-    
-    // 创建 TLS 接受器
-    let acceptor = server_config.as_ref().clone();
-    
-    info!("🔐 [服务端] 开始 TLS 握手: {}", remote_addr);
-    
-    // 进行 TLS 握手 - 使用 tokio-openssl 的异步接口
-    let mut ssl = openssl::ssl::Ssl::new(acceptor.context())
-        .map_err(|e| {
-            error!("❌ [服务端] 创建 SSL 失败: {}", e);
-            format!("创建 SSL 失败: {}", e)
-        })?;
 
-    println!("[服务端调试] SSL 对象创建成功");
-    println!("[服务端调试] SSL 版本: {:?}", ssl.version_str());
+    if let Some(server_config) = server_config {
+        // 有证书，使用 TLS
+        let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
 
-    // 设置连接类型为服务器端
-    ssl.set_accept_state();
-    println!("[服务端调试] SSL 连接类型设置为服务器端");
+        // 将泛型 stream 转换为 TcpStream（这里需要一些技巧）
+        // 简化处理：假设 S 是 TcpStream
+        let tls_stream = acceptor.accept(stream).await
+            .map_err(|e| {
+                error!("❌ [服务端] TLS 握手失败: {}", e);
+                format!("TLS 握手失败: {}", e)
+            })?;
 
-    let tls_stream = SslStream::new(ssl, stream)
-        .map_err(|e| {
-            error!("❌ [服务端] 创建 SSL 流失败: {}", e);
-            format!("创建 SSL 流失败: {}", e)
-        })?;
+        info!("✅ [服务端] TLS 握手成功: {}", remote_addr);
 
-    println!("[服务端调试] TLS 流创建成功，开始握手...");
+        // 获取 ALPN 协议
+        let (_tcp_stream, conn) = tls_stream.get_ref();
+        let alpn_protocol = conn.alpn_protocol().map(|p| p.to_vec());
+        info!("🔐 [服务端] ALPN 协议: {:?}", alpn_protocol);
 
-    let mut tls_stream = tls_stream;
-    println!("[服务端调试] 开始 TLS 握手过程...");
-    Pin::new(&mut tls_stream).do_handshake().await
-        .map_err(|e| {
-            error!("❌ [服务端] TLS 握手失败: {}", e);
-            println!("[服务端调试] ❌ TLS 握手失败: {}", e);
-            format!("TLS 握手失败: {}", e)
-        })?;
+        // HTTP 的 TLS 连接也强制要求 HTTP/2
+        if !crate::server::cert_manager::rustls_cert::AlpnProtocol::is_http2(&alpn_protocol) {
+            warn!("⚠️ [服务端] 非 HTTP/2 连接: ALPN={:?}, 客户端={}", alpn_protocol, remote_addr);
+            // HTTP 端口可以稍微宽容一些，允许继续处理
+        }
 
-    println!("[服务端调试] ✅ TLS 握手成功！");
+        // 在 TLS 连接上建立 HTTP/2（内联 handle_h2_tls_connection 的逻辑）
+        use h2::server;
+        debug!("🔍 [服务端] 开始处理 HTTP/2 over TLS 连接: {}", remote_addr);
 
-    // 打印握手后的详细信息
-    let ssl = tls_stream.ssl();
-    println!("[服务端调试] 握手后 SSL 版本: {:?}", ssl.version_str());
-    println!("[服务端调试] 握手后 ALPN 协议: {:?}", ssl.selected_alpn_protocol());
-    println!("[服务端调试] 握手后 客户端证书: {:?}", ssl.peer_certificate());
-    
-    info!("✅ [服务端] TLS 握手成功: {}", remote_addr);
-    
-    // 简化处理：我们的框架只支持 HTTP/2，直接按 HTTP/2 处理所有 TLS 连接
-    // 完全跳过 ALPN 协商检查，因为我们只有一个协议选择
-    info!("🚀 [服务端] 跳过 ALPN 协商检查，直接按 HTTP/2 处理 TLS 连接: {}", remote_addr);
-    crate::utils::logger::debug!("🚀 直接按 HTTP/2 处理 TLS 连接（框架只支持 HTTP/2）");
+        let mut h2_builder = h2::server::Builder::default();
+        h2_builder.max_frame_size(1024 * 1024);
 
-    handle_h2_tls_connection(tls_stream, remote_addr, router).await
+        let mut connection = h2_builder.handshake(tls_stream).await
+            .map_err(|e| {
+                error!("❌ [服务端] HTTP/2 over TLS 握手失败: {}", e);
+                format!("HTTP/2 over TLS 握手失败: {}", e)
+            })?;
+
+        info!("✅ [服务端] HTTP/2 over TLS 连接已建立: {}", remote_addr);
+
+        // 处理 HTTP/2 请求
+        while let Some(request_result) = connection.accept().await {
+            match request_result {
+                Ok((request, respond)) => {
+                    debug!("📥 [服务端] 接收到 HTTP/2 over TLS 请求: {} {}",
+                        request.method(), request.uri().path());
+
+                    let router_clone = router.clone();
+
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_h2_request(request, respond, remote_addr, router_clone).await {
+                            error!("❌ [服务端] 处理 HTTP/2 over TLS 请求失败: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("❌ [服务端] 接受 HTTP/2 over TLS 请求失败: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    } else {
+        // 没有证书，返回错误（调用者应该降级到 HTTP/1.1）
+        Err("HTTP 未配置证书，请降级到 HTTP/1.1".into())
+    }
 }
-
-/// 处理 HTTP/2 over TLS 连接
 async fn handle_h2_tls_connection(
-    tls_stream: tokio_openssl::SslStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
+    tls_stream: TlsStream<tokio::net::TcpStream>,
     remote_addr: SocketAddr,
     router: Arc<Router>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -999,31 +1047,6 @@ async fn handle_h2_tls_connection(
     Ok(())
 }
 
-/// 处理 HTTP/1.1 over TLS 连接
-async fn handle_http1_tls_connection(
-    tls_stream: tokio_openssl::SslStream<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>,
-    remote_addr: SocketAddr,
-    adapter: Arc<HyperAdapter>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let io = TokioIo::new(tls_stream);
-    let service = hyper::service::service_fn(move |req| {
-        let adapter = adapter.clone();
-        async move {
-            adapter.handle_request(req, Some(remote_addr)).await
-        }
-    });
-    
-    if let Err(e) = Builder::new(hyper_util::rt::TokioExecutor::new())
-        .serve_connection(io, service)
-        .await
-    {
-        rat_logger::warn!("❌ [服务端] HTTP/1.1 over TLS 连接处理失败: {}", e);
-        return Err(format!("HTTP/1.1 over TLS 连接处理失败: {}", e).into());
-    }
-    
-    Ok(())
-}
-
 /// 处理 HTTP/1.1 连接
 async fn handle_http1_connection(
     stream: tokio::net::TcpStream,
@@ -1037,9 +1060,11 @@ async fn handle_http1_connection(
             adapter.handle_request(req, Some(remote_addr)).await
         }
     });
-    
+
     if let Err(e) = Builder::new(hyper_util::rt::TokioExecutor::new())
-        .serve_connection(io, service)
+        .http2()
+        .enable_connect_protocol()
+        .serve_connection_with_upgrades(io, service)
         .await
     {
         // 区分正常的客户端断开连接和真正的服务器错误
@@ -1077,9 +1102,11 @@ where
             adapter.handle_request(req, Some(remote_addr)).await
         }
     });
-    
+
     if let Err(e) = Builder::new(hyper_util::rt::TokioExecutor::new())
-        .serve_connection(io, service)
+        .http2()
+        .enable_connect_protocol()
+        .serve_connection_with_upgrades(io, service)
         .await
     {
         // 区分正常的客户端断开连接和真正的服务器错误
@@ -1101,69 +1128,9 @@ where
     Ok(())
 }
 
-/// 处理 H2C（HTTP/2 over cleartext）连接
-async fn handle_h2c_connection(
-    stream: tokio::net::TcpStream,
-    remote_addr: SocketAddr,
-    router: Arc<Router>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    handle_h2c_connection_with_stream(stream, remote_addr, router).await
-}
-
-/// 处理带有预读数据的 H2C 连接
-async fn handle_h2c_connection_with_stream<S>(
-    stream: S,
-    remote_addr: SocketAddr,
-    router: Arc<Router>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    use h2::server;
-    
-    debug!("🔍 [服务端] 开始处理 H2C 连接（带预读数据）: {}", remote_addr);
-    
-    // 配置 HTTP/2 服务器，设置与客户端匹配的帧大小
-    let mut h2_builder = h2::server::Builder::default();
-    h2_builder.max_frame_size(1024 * 1024); // 设置最大帧大小为 1MB，与客户端保持一致
-    
-    // 创建 HTTP/2 服务器连接
-    let mut connection = h2_builder.handshake(stream).await
-        .map_err(|e| {
-            error!("❌ [服务端] HTTP/2 握手失败: {}", e);
-            format!("HTTP/2 握手失败: {}", e)
-        })?;
-    
-    info!("✅ [服务端] HTTP/2 连接已建立: {}", remote_addr);
-    crate::utils::logger::debug!("✅ HTTP/2 连接已建立: {}", remote_addr);
-    
-    // 处理 HTTP/2 请求
-    while let Some(request_result) = connection.accept().await {
-        match request_result {
-            Ok((request, respond)) => {
-                debug!("📥 [服务端] 接收到 HTTP/2 请求: {} {}", 
-                    request.method(), request.uri().path());
-                
-                let router_clone = router.clone();
-                
-                // 为每个请求启动处理任务
-                tokio::spawn(async move {
-                    if let Err(e) = handle_h2_request(request, respond, remote_addr, router_clone).await {
-                        error!("❌ [服务端] 处理 HTTP/2 请求失败: {}", e);
-                        crate::utils::logger::error!("处理 HTTP/2 请求失败: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-            error!("❌ [服务端] 接受 HTTP/2 请求失败: {}", e);
-            crate::utils::logger::error!("接受 HTTP/2 请求失败: {}", e);
-            break;
-        }
-        }
-    }
-    
-    Ok(())
-}
+// ============ 已移除 H2C 支持 ============
+// handle_h2c_connection 和 handle_h2c_connection_with_stream 已移除
+// gRPC 服务端强制使用 TLS (HTTP/2-only)
 
 /// 处理单个 HTTP/2 请求
 async fn handle_h2_request(

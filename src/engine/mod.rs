@@ -328,89 +328,72 @@ impl RatEngineBuilder {
     pub async fn enable_development_mode(mut self, hostnames: Vec<String>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         self.enable_development_mode_with_whitelist(hostnames, Vec::new()).await
     }
-    
-    /// 启用开发模式并配置MTLS白名单（自动生成自签名证书）
-    pub async fn enable_development_mode_with_whitelist(mut self, hostnames: Vec<String>, mtls_whitelist_paths: Vec<String>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        use crate::server::cert_manager::{CertificateManager, CertManagerBuilder, CertManagerConfig};
-        
-        // 确保 CryptoProvider 只安装一次
-        crate::utils::crypto_provider::ensure_crypto_provider_installed();
-        
-        let cert_config = CertManagerConfig {
-            development_mode: true,
-            cert_path: None,
-            key_path: None,
-            ca_path: None,
-            validity_days: 3650,
-            hostnames,
-            acme_enabled: false,
-            acme_production: false,
-            acme_email: None,
-            cloudflare_api_token: None,
-            acme_renewal_days: 30,
-            acme_cert_dir: None,
-            mtls_enabled: false,
-            client_cert_path: None,
-            client_key_path: None,
-            client_ca_path: None,
-            mtls_mode: None,
-            auto_generate_client_cert: false,
-            client_cert_subject: None,
-            auto_refresh_enabled: false,
-            refresh_check_interval: 3600,
-            force_cert_rotation: false,
-            mtls_whitelist_paths,
-        };
-        
-        let mut cert_manager = CertificateManager::new(cert_config);
-        cert_manager.initialize().await?;
-        
-        self.cert_manager = Some(Arc::new(std::sync::RwLock::new(cert_manager)));
-        crate::utils::logger::info!("✅ 开发模式证书管理器配置完成");
-        Ok(self)
-    }
-    
-    /// 配置严格验证模式证书
+
+    /// 配置证书（rustls + ring，仅支持 TLS）
+    ///
+    /// gRPC 强制要求 TLS 证书
     pub async fn with_certificate_files(mut self, cert_path: String, key_path: String, ca_path: Option<String>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        use crate::server::cert_manager::{CertificateManager, CertManagerBuilder, CertManagerConfig};
-        
+        use crate::server::cert_manager::{CertificateManager, CertConfig, CertManagerConfig};
+
         // 确保 CryptoProvider 只安装一次
         crate::utils::crypto_provider::ensure_crypto_provider_installed();
-        
-        let cert_config = CertManagerConfig {
-            development_mode: false,
-            cert_path: Some(cert_path),
-            key_path: Some(key_path),
-            ca_path,
-            validity_days: 3650,
-            hostnames: Vec::new(),
-            acme_enabled: false,
-            acme_production: false,
-            acme_email: None,
-            cloudflare_api_token: None,
-            acme_renewal_days: 30,
-            acme_cert_dir: None,
-            mtls_enabled: false,
-            client_cert_path: None,
-            client_key_path: None,
-            client_ca_path: None,
-            mtls_mode: None,
-            auto_generate_client_cert: false,
-            client_cert_subject: None,
-            auto_refresh_enabled: false,
-            refresh_check_interval: 3600,
-            force_cert_rotation: false,
-            mtls_whitelist_paths: Vec::new(),
+
+        let cert_config = CertConfig::from_paths(cert_path, key_path);
+        let cert_config = if let Some(ca) = ca_path {
+            cert_config.with_ca(ca)
+        } else {
+            cert_config
         };
-        
-        let mut cert_manager = CertificateManager::new(cert_config);
-        cert_manager.initialize().await?;
-        
+
+        let config = CertManagerConfig::shared(cert_config);
+        let cert_manager = CertificateManager::from_config(config)?;
+
         self.cert_manager = Some(Arc::new(std::sync::RwLock::new(cert_manager)));
-        crate::utils::logger::info!("✅ 严格验证模式证书管理器配置完成");
+        crate::utils::logger::info!("✅ TLS 证书配置完成");
         Ok(self)
     }
-    
+
+    /// 配置分离的 gRPC 和 HTTP 证书（分端口模式）
+    pub async fn with_separated_certificates(
+        mut self,
+        grpc_cert_path: String,
+        grpc_key_path: String,
+        http_cert_path: Option<String>,
+        http_key_path: Option<String>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::server::cert_manager::{CertificateManager, CertConfig, CertManagerConfig};
+
+        // 确保 CryptoProvider 只安装一次
+        crate::utils::crypto_provider::ensure_crypto_provider_installed();
+
+        let grpc_cert = CertConfig::from_paths(grpc_cert_path, grpc_key_path);
+
+        let http_cert = if let (Some(http_cert_path), Some(http_key_path)) = (http_cert_path, http_key_path) {
+            Some(CertConfig::from_paths(http_cert_path, http_key_path))
+        } else {
+            None
+        };
+
+        let config = CertManagerConfig::separated(grpc_cert, http_cert);
+        let cert_manager = CertificateManager::from_config(config)?;
+
+        self.cert_manager = Some(Arc::new(std::sync::RwLock::new(cert_manager)));
+        crate::utils::logger::info!("✅ 分离证书配置完成（gRPC 和 HTTP）");
+        Ok(self)
+    }
+
+    /// ⚠️ 已废弃：开发模式不再支持，必须配置证书
+    #[deprecated(note = "开发模式已移除，请使用 with_certificate_files 配置证书")]
+    pub async fn enable_development_mode_with_whitelist(self, _hostnames: Vec<String>, _mtls_whitelist_paths: Vec<String>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        panic!("开发模式已移除！gRPC 必须配置 TLS 证书。请使用 with_certificate_files() 方法配置证书。");
+    }
+
+    /// 配置证书文件（已废弃，请使用 with_certificate_files）
+    #[deprecated(note = "请使用 with_certificate_files")]
+    pub async fn with_certificate_files_old(mut self, cert_path: String, key_path: String, ca_path: Option<String>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        self.with_certificate_files(cert_path, key_path, ca_path).await
+    }
+
     /// 配置拥塞控制
     pub fn congestion_control(mut self, enabled: bool, algorithm: String) -> Self {
         self.engine_config.congestion_control.enabled = enabled;
@@ -458,58 +441,21 @@ impl RatEngineBuilder {
         self
     }
     
-    /// 配置ACME证书管理器
+    /// ⚠️ ACME 证书管理暂时不可用
+    ///
+    /// 新的 rustls 实现暂不支持 ACME 自动证书。
+    /// 请使用 with_certificate_files() 配置静态证书文件。
+    #[deprecated(note = "ACME 暂不支持，请使用 with_certificate_files 配置静态证书")]
     pub async fn cert_manager_acme(
-        mut self,
-        domain: String,
-        email: String,
-        cloudflare_token: String,
-        cert_dir: String,
-        renewal_days: u32,
-        production: bool, // true: 生产环境, false: 沙盒环境
+        self,
+        _domain: String,
+        _email: String,
+        _cloudflare_token: String,
+        _cert_dir: String,
+        _renewal_days: u32,
+        _production: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        use crate::server::cert_manager::CertManagerBuilder;
-        
-        // 如果启用了日志但尚未初始化，提前初始化日志系统
-        if self.auto_init_logger {
-            // 检查日志系统是否已经初始化
-            if let Some(log_config) = &self.server_config.log_config {
-                match crate::utils::logger::Logger::init(log_config.clone()) {
-                    Ok(_) => {},
-                    Err(e) if e.to_string().contains("already initialized") => {
-                        // 日志系统已经初始化，忽略错误
-                    },
-                    Err(e) => {
-                        return Err(format!("日志系统初始化失败: {}", e).into());
-                    }
-                }
-            }
-        }
-        
-        let mode_name = if production { "生产环境" } else { "沙盒环境" };
-        crate::utils::logger::info!("🔧 开始配置ACME {}模式证书管理器", mode_name);
-        crate::utils::logger::info!("🔧 域名: {}, 邮箱: {}, 证书目录: {}", domain, email, cert_dir);
-        
-        // 配置 ACME 证书管理器
-        let mut cert_manager = CertManagerBuilder::new()
-            .development_mode(false) // 关闭开发模式，使用真实证书
-            .enable_acme(true) // 启用 ACME 自动证书
-            .with_acme_production(production) // 生产/沙盒环境
-            .with_acme_email(email.clone()) // ACME 账户邮箱
-            .with_cloudflare_api_token(cloudflare_token.clone()) // Cloudflare DNS API
-            .with_hostnames(vec![domain.clone()]) // 主机名列表
-            .with_acme_cert_dir(cert_dir) // 证书存储目录
-            .with_acme_renewal_days(renewal_days) // 自动续期天数
-            .build();
-        
-        crate::utils::logger::info!("🔧 ACME证书管理器构建完成，开始初始化...");
-        
-        // 初始化证书管理器（这会触发 ACME 证书申请）
-        cert_manager.initialize().await?;
-        
-        self.cert_manager = Some(Arc::new(std::sync::RwLock::new(cert_manager)));
-        crate::utils::logger::info!("✅ ACME {}模式证书管理器配置完成", mode_name);
-        Ok(self)
+        panic!("ACME 自动证书功能暂不可用！请使用 with_certificate_files() 方法配置静态证书文件。");
     }
     
     /// 构建引擎
@@ -600,7 +546,31 @@ impl ActualRatEngine {
         
         let addr = format!("{}:{}", host, port);
         let listener = TcpListener::bind(&addr).await?;
-        
+
+        // ============ 证书校验 ============
+        // gRPC 强制要求 TLS 证书
+        if let Some(router) = &self.router {
+            let grpc_methods = router.list_grpc_methods();
+            let has_grpc_methods = !grpc_methods.is_empty();
+            let is_grpc_only = router.is_grpc_only();
+
+            // 如果有 gRPC 方法或者是 gRPC 专用模式，必须有证书配置
+            if has_grpc_methods || is_grpc_only {
+                if self.cert_manager.is_none() {
+                    panic!("gRPC 服务必须配置 TLS 证书！请在启动前配置证书。");
+                }
+
+                // 检查证书管理器是否有 gRPC 证书
+                if let Some(cert_manager) = &self.cert_manager {
+                    if let Ok(cert_manager_guard) = cert_manager.read() {
+                        if !cert_manager_guard.has_grpc_cert() {
+                            panic!("gRPC 服务必须配置 TLS 证书！请使用 CertManagerConfig::shared() 或 CertManagerConfig::separated() 配置证书。");
+                        }
+                    }
+                }
+            }
+        }
+
         // 根据路由器配置确定支持的协议
         let supported_protocols = if let Some(router) = &self.router {
             let mut protocols = vec!["HTTP/1.1"];
@@ -638,70 +608,10 @@ impl ActualRatEngine {
         }
         
         crate::utils::logger::info!("🌐 服务器支持 HTTP 请求");
-        
-        // 配置 ALPN 协议支持（如果引擎有证书管理器）
-        if let Some(cert_manager) = &self.cert_manager {
-            let mut alpn_protocols = Vec::new();
 
-            // 从路由器获取 gRPC 方法和 HTTP/2 配置
-            if let Some(router) = &self.router {
-                let grpc_methods = router.list_grpc_methods();
-                let has_grpc_methods = !grpc_methods.is_empty();
+        // 注意：rustls 的 ALPN 在创建 ServerConfig 时已经设置（只支持 h2）
+        // 不需要在这里配置 ALPN
 
-       
-                if router.is_h2_enabled() {
-                    alpn_protocols.push(b"h2".to_vec());
-                            }
-
-                // 只有在没有 gRPC 方法且未启用 H2 或同时启用了 H2C 时才添加 HTTP/1.1 作为回退
-                // gRPC 强制要求 HTTP/2，所以不能回退到 HTTP/1.1
-                let should_add_http11 = !has_grpc_methods && (!router.is_h2_enabled() || router.is_h2c_enabled());
-          
-                if should_add_http11 {
-                                alpn_protocols.push(b"http/1.1".to_vec());
-                }
-            } else {
-                // 没有路由器时，默认支持 HTTP/1.1
-                             alpn_protocols.push(b"http/1.1".to_vec());
-            }
-
-      
-            // 根据 gRPC 只使用 HTTP/2 的原则，完全跳过 ALPN 配置
-            // gRPC 不需要 ALPN 协商，直接使用 HTTP/2
-            if let Some(router) = &self.router {
-                let grpc_methods = router.list_grpc_methods();
-                let has_grpc_methods = !grpc_methods.is_empty();
-
-                if has_grpc_methods {
-                    println!("[ALPN调试] 检测到 gRPC 方法，设置 HTTP/2 ALPN（gRPC 专用）");
-                    // 为 gRPC 设置 HTTP/2 ALPN，但不进行协商
-                    if let Ok(mut cert_manager_guard) = cert_manager.write() {
-                        if let Err(e) = cert_manager_guard.configure_alpn_protocols(vec![b"h2".to_vec()]) {
-                            crate::utils::logger::error!("配置 HTTP/2 ALPN 协议失败: {}", e);
-                            return Err(format!("ALPN 配置失败: {}", e).into());
-                        }
-                        crate::utils::logger::info!("✅ HTTP/2 ALPN 协议配置成功（gRPC 模式）");
-                    }
-                } else {
-                                  if let Ok(mut cert_manager_guard) = cert_manager.write() {
-                        if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
-                            crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
-                            return Err(format!("ALPN 配置失败: {}", e).into());
-                        }
-                        crate::utils::logger::info!("✅ ALPN 协议配置成功");
-                    }
-                }
-            } else {
-                            if let Ok(mut cert_manager_guard) = cert_manager.write() {
-                    if let Err(e) = cert_manager_guard.configure_alpn_protocols(alpn_protocols) {
-                        crate::utils::logger::error!("配置 ALPN 协议失败: {}", e);
-                        return Err(format!("ALPN 配置失败: {}", e).into());
-                    }
-                    crate::utils::logger::info!("✅ ALPN 协议配置成功");
-                }
-            }
-        }
-        
         // 启动工作线程
         self.start_workers().await;
         
@@ -725,8 +635,9 @@ impl ActualRatEngine {
                     if let Some(router) = &self.router {
                         let router = router.clone();
                         let adapter = Arc::new(crate::server::hyper_adapter::HyperAdapter::new(router.clone()));
-                        let cert_manager = self.cert_manager.clone();
-                        
+                        // 优先使用router中的证书管理器，否则使用engine的证书管理器
+                        let cert_manager = router.get_cert_manager().or_else(|| self.cert_manager.clone());
+
                         // 异步处理连接（使用协议检测）
                         tokio::spawn(async move {
                             if let Err(e) = crate::server::detect_and_handle_protocol_with_tls(stream, addr, router, adapter, cert_manager).await {
