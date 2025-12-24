@@ -110,8 +110,9 @@ impl PingPongClientHandler {
             // 所有消息发送完毕，发送关闭指令
             println!("📤 所有消息发送完毕，发送关闭指令...");
             let _ = context.sender().send_close().await;
+            println!("✅ 流正常结束");
             println!();
-            Err("All messages sent, closing stream".to_string())
+            Ok(())
         }
     }
 }
