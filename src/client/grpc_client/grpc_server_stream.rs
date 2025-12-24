@@ -294,52 +294,52 @@ impl RatGrpcClient {
                                         }
                                     }
                                 } else {
-                                    // 策略2：对于其他类型，先尝试直接反序列化为目标类型
-                                    match GrpcCodec::decode::<R>(message_data) {
-                                        Ok(data) => {
-                                                                       // 创建一个简化的流消息结构
-                                            let typed_message = GrpcStreamMessage {
-                                                id: 0, // 简化处理
-                                                stream_id: 0,
-                                                sequence: 0,
-                                                end_of_stream: false, // 由上层逻辑判断
-                                                data,
-                                                metadata: std::collections::HashMap::new(),
-                                            };
-                                            yield Ok(typed_message);
-                                        }
-                                        Err(_) => {
-                                            // 如果直接反序列化失败，尝试反序列化为 GrpcStreamMessage<Vec<u8>>
-                                                                                match GrpcCodec::decode::<GrpcStreamMessage<Vec<u8>>>(message_data) {
-                                                Ok(stream_message) => {
-                                                    // 尝试反序列化 data 字段为目标类型 R
-                                                                                              match GrpcCodec::decode::<R>(&stream_message.data) {
-                                                        Ok(data) => {
-                                                                                                                let typed_message = GrpcStreamMessage {
-                                                                id: stream_message.id,
-                                                                stream_id: stream_message.stream_id,
-                                                                sequence: stream_message.sequence,
-                                                                end_of_stream: stream_message.end_of_stream,
-                                                                data,
-                                                                metadata: stream_message.metadata,
-                                                            };
-                                                            yield Ok(typed_message);
-                                                            
-                                                            // 如果是流结束标志，退出循环
-                                                            if stream_message.end_of_stream {
-                                                                stream_ended = true;
-                                                                break;
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                                                                                      yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_data_field_failed", &[("msg", &e.to_string())])));
-                                                            stream_ended = true;
-                                                            break;
-                                                        }
+                                    // 策略2：优先尝试解码为 GrpcStreamMessage<Vec<u8>>，然后解码 data 字段
+                                    match GrpcCodec::decode::<GrpcStreamMessage<Vec<u8>>>(message_data) {
+                                        Ok(stream_message) => {
+                                            // 尝试反序列化 data 字段为目标类型 R
+                                            match GrpcCodec::decode::<R>(&stream_message.data) {
+                                                Ok(data) => {
+                                                    let typed_message = GrpcStreamMessage {
+                                                        id: stream_message.id,
+                                                        stream_id: stream_message.stream_id,
+                                                        sequence: stream_message.sequence,
+                                                        end_of_stream: stream_message.end_of_stream,
+                                                        data,
+                                                        metadata: stream_message.metadata,
+                                                    };
+                                                    yield Ok(typed_message);
+
+                                                    // 如果是流结束标志，退出循环
+                                                    if stream_message.end_of_stream {
+                                                        stream_ended = true;
+                                                        break;
                                                     }
                                                 }
                                                 Err(e) => {
-                                                                                                   yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_grpc_stream_message_failed", &[("msg", &e.to_string())])));
+                                                    yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_data_field_failed", &[("msg", &e.to_string())])));
+                                                    stream_ended = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            // 如果解码为 GrpcStreamMessage<Vec<u8>> 失败，尝试直接反序列化为目标类型
+                                            match GrpcCodec::decode::<R>(message_data) {
+                                                Ok(data) => {
+                                                    // 创建一个简化的流消息结构
+                                                    let typed_message = GrpcStreamMessage {
+                                                        id: 0, // 简化处理
+                                                        stream_id: 0,
+                                                        sequence: 0,
+                                                        end_of_stream: false, // 由上层逻辑判断
+                                                        data,
+                                                        metadata: std::collections::HashMap::new(),
+                                                    };
+                                                    yield Ok(typed_message);
+                                                }
+                                                Err(e) => {
+                                                    yield Err(RatError::DeserializationError(rat_embed_lang::tf("deserialize_both_formats_failed", &[("msg", &e.to_string())])));
                                                     stream_ended = true;
                                                     break;
                                                 }
