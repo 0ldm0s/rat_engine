@@ -128,8 +128,8 @@ fn broadcast_to_room(room_id: u32, event_type: &str, data: &Value) {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 验证证书文件
-    let cert_path = "../../certs/ligproxy-test.0ldm0s.net.pem";
-    let key_path = "../../certs/ligproxy-test.0ldm0s.net-key.pem";
+    let cert_path = "./certs/ligproxy-test.0ldm0s.net.pem";
+    let key_path = "./certs/ligproxy-test.0ldm0s.net-key.pem";
 
     if !std::path::Path::new(cert_path).exists() {
         return Err(format!("证书文件不存在: {}", cert_path).into());

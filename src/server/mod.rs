@@ -643,82 +643,10 @@ pub async fn detect_and_handle_protocol_with_tls(
         println!("ℹ️ [服务端] 未检测到 PROXY protocol v2，使用普通协议检测");
     }
 
-    // 如果检测到 PROXY protocol v2，优先使用其中的协议信息
-    if proxy_header_len > 0 {
-        println!("🔍 [服务端] [DEBUG] 使用 PROXY protocol v2 模式，跳过 psi_detector");
-
-        // 重新解析 PROXY protocol 以获取 ALPN 信息
-        if let Ok(proxy_info) = crate::server::proxy_protocol::ProxyProtocolV2Parser::parse(&buffer[..bytes_read]) {
-            println!("🔍 [服务端] 检查 PROXY protocol v2 ALPN 信息");
-
-            // 检查 ALPN 协议
-            if let Some(ref alpn) = proxy_info.alpn {
-                println!("🚀 [服务端] 使用 PROXY ALPN 协议: {}", alpn);
-
-                // 根据 ALPN 直接决定协议类型
-                match alpn.to_lowercase().as_str() {
-                    "h2" => {
-                        println!("📋 [服务端] ALPN h2，检测是否为 gRPC 请求");
-
-                        // 检查是否为 gRPC 请求（基于 HEADERS）
-                        if detection_data.len() >= 16 {
-                            // 检查 HTTP/2 HEADERS 中的 content-type
-                            let data_str = String::from_utf8_lossy(detection_data);
-                            if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
-                                println!("✅ [服务端] 识别为 gRPC over HTTP/2");
-                                route_by_detected_protocol(stream, detection_data, ProtocolType::GRPC, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-                                return Ok(());
-                            }
-                        }
-
-                        println!("✅ [服务端] 识别为 HTTP/2");
-                        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-                        return Ok(());
-                    },
-                    "http/1.1" => {
-                        println!("✅ [服务端] 识别为 HTTP/1.1");
-                        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-                        return Ok(());
-                    },
-                    _ => {
-                        println!("⚠️ [服务端] 未知 ALPN 协议: {}，继续检查头部", alpn);
-                    }
-                };
-            } else {
-                println!("⚠️ [服务端] PROXY protocol v2 中没有 ALPN 信息，检查 HAProxy 添加的头部");
-            }
-
-            // 如果没有 ALPN 或 ALPN 未知，检查 HAProxy 添加的头部
-            println!("🔍 [服务端] [DEBUG] 检查应用数据中的 HAProxy 头部");
-            let data_str = String::from_utf8_lossy(detection_data);
-            println!("🔍 [服务端] [DEBUG] 应用数据前200字符: {}", &data_str[..data_str.len().min(200)]);
-
-            // 检查是否为 gRPC 请求（基于 HAProxy 添加的头部）
-            if data_str.contains("application/grpc") || data_str.contains("te: trailers") {
-                println!("✅ [服务端] 通过 HAProxy 头部识别为 gRPC 请求");
-
-                // gRPC 请求必须使用 TLS
-                if tls_cert_manager.is_some() {
-                    println!("✅ [服务端] gRPC 请求使用 TLS 处理");
-                    route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-                    return Ok(());
-                } else {
-                    println!("❌ [服务端] gRPC 请求需要 TLS 证书，但未配置");
-                    return Err("gRPC requires TLS certificate".into());
-                }
-            }
-
-            // 否则识别为 HTTP 请求
-            println!("✅ [服务端] 识别为 HTTP 请求");
-            route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-            return Ok(());
-        } else {
-            println!("❌ [服务端] PROXY protocol v2 解析失败，继续使用 psi_detector");
-        }
-    }
-
     // ============ 简化协议检测逻辑 ============
     // 根据 Router 模式决定如何处理请求
+    // 如果检测到 PROXY protocol v2，已在上面的代码中提取真实客户端 IP
+    // 并跳过 PPv2 头部，detection_data 现在指向应用层数据
 
     // 打印调试信息（安全地处理二进制数据）
     let data_str = String::from_utf8_lossy(detection_data);
