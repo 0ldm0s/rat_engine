@@ -78,8 +78,6 @@ zstd = { version = "0.12", optional = true }
 # 缓存支持
 rat_memcache = { version = "0.2.4", optional = true }
 jsonwebtoken = "9.3.1"
-# 协议检测支持
-psi_detector = "0.1.3"
 # HTTP/2 和 gRPC 支持
 h2 = "0.4"
 # TLS 支持 - 使用 rustls + ring（默认启用，支持HTTP/2和gRPC）

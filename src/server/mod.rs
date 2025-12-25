@@ -19,7 +19,31 @@ use h2::server::SendResponse;
 use h2::RecvStream;
 use bytes;
 use http_body_util;
-use psi_detector::core::protocol::ProtocolType;
+// 使用简化的协议枚举
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolType {
+    HTTP1_0,
+    HTTP1_1,
+    HTTP2,
+    HTTP3,
+    GRPC,
+    TLS,
+    Unknown,
+    // 以下变体用于兼容性，但不再使用
+    WebSocket,
+    SSH,
+    TCP,
+    QUIC,
+    MQTT,
+    UDP,
+    FTP,
+    SMTP,
+    DNS,
+    Redis,
+    MySQL,
+    Custom,
+}
+
 use crate::utils::logger::{debug, info, warn, error};
 
 use hyper_util::rt::TokioIo;
@@ -455,6 +479,43 @@ pub async fn detect_and_handle_protocol(
     detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, None).await
 }
 
+/// 简单的 gRPC 检测函数
+/// 检查数据是否为 gRPC 请求（基于 content-type 或 gRPC 帧格式）
+fn is_grpc_request(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+
+    // 方法1: 检查是否为 TLS ClientHello (0x16 = TLS record)
+    // 如果是 TLS，需要 TLS 握手后才能判断内容
+    if data[0] == 0x16 {
+        // TLS 连接，返回 false 让 TLS 处理器接管
+        return false;
+    }
+
+    // 方法2: 检查是否为 HTTP/1.1 请求中的 gRPC
+    let data_str = String::from_utf8_lossy(data);
+    if data_str.contains("content-type:") || data_str.contains("Content-Type:") {
+        return data_str.contains("application/grpc");
+    }
+
+    // 方法3: 检查是否为 gRPC 二进制帧格式 (compressed-flag + 4-byte length)
+    // gRPC 消息格式: [1 byte compressed flag] [4 bytes message length] [message data]
+    if data.len() >= 5 {
+        // 检查前5字节是否可能是 gRPC 帧头
+        let compressed_flag = data[0];
+        if compressed_flag == 0 || compressed_flag == 1 {
+            let length = u32::from_be_bytes([data[1], data[2], data[3], data[4]]);
+            // 合理的 gRPC 消息长度（通常 < 16MB）
+            if length < 16 * 1024 * 1024 && data.len() >= 5 + length as usize {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 pub async fn detect_and_handle_protocol_with_tls(
     mut stream: tokio::net::TcpStream,
     remote_addr: SocketAddr,
@@ -463,17 +524,9 @@ pub async fn detect_and_handle_protocol_with_tls(
     tls_cert_manager: Option<Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use psi_detector::{
-        builder::DetectorBuilder,
-        core::{
-            detector::{DefaultProtocolDetector, DetectionConfig, ProtocolDetector},
-            protocol::ProtocolType,
-            probe::ProbeStrategy,
-        },
-    };
-    
+
     // 读取连接的前几个字节来检测协议
-    let mut buffer = [0u8; 1024]; // 增加缓冲区大小以便更好地进行协议检测
+    let mut buffer = [0u8; 1024];
     let mut total_read = 0;
     
     // 尝试读取数据，但设置超时
@@ -664,161 +717,63 @@ pub async fn detect_and_handle_protocol_with_tls(
         }
     }
 
-    // 如果没有 ALPN 信息或 ALPN 无法处理，使用 psi_detector 进行协议检测
-    rat_logger::debug!("🔍 [服务端] 开始 psi_detector 协议检测: {} (数据长度: {})", actual_remote_addr, detection_data.len());
+    // ============ 简化协议检测逻辑 ============
+    // 根据 Router 模式决定如何处理请求
 
-    // 添加调试信息：打印接收到的数据
-    let data_preview = String::from_utf8_lossy(&detection_data[..detection_data.len().min(50)]);
-    rat_logger::debug!("🔍 [服务端] 接收到的数据预览: {}", data_preview);
-
-    // 创建协议检测器
-    let detector = match DetectorBuilder::new()
-        .enable_http()
-        .enable_http2()
-        .enable_grpc()
-        .enable_tls()  // 添加 TLS 检测支持
-        .balanced()
-        .build()
-    {
-        Ok(detector) => detector,
-        Err(e) => {
-            debug!("🚫 [服务端] 创建协议检测器失败，疑似扫描器攻击，直接丢弃连接: {} (错误: {})", remote_addr, e);
-            crate::utils::logger::warn!("🚫 协议检测器创建失败，疑似扫描器攻击，丢弃连接: {} (错误: {})", remote_addr, e);
-            // 直接关闭连接，不进行任何响应
-            drop(stream);
-            return Ok(());
-        }
-    };
-
-    // 检查专用模式（简化协议检测）
+    // 打印调试信息（安全地处理二进制数据）
     let data_str = String::from_utf8_lossy(detection_data);
-    let data_str_lower = data_str.to_lowercase();
+    let safe_preview: String = data_str.chars().take(100).collect();
+    println!("🔍 [服务端] 协议检测数据 (前100字符): {:?}", safe_preview);
 
-    // 打印接收到的头部信息
-    println!("[服务端DEBUG] 接收到的原始数据 (前200字节):");
-    // 安全地截取字符串（按字符边界）
-    let safe_len = data_str.chars().take(200).collect::<String>();
-    println!("  原始: {:?}", safe_len);
-    let safe_lower = data_str_lower.chars().take(200).collect::<String>();
-    println!("  小写: {:?}", safe_lower);
-
-    let has_grpc_header = data_str_lower.contains("application/grpc+ratengine") ||
-                          data_str_lower.contains("application/grpc") ||
-                          data_str.starts_with("PRI * HTTP/2.0");  // HTTP/2格式的gRPC请求
-
+    // 情况1: HTTP 专用模式 - 直接走 HTTP 处理
     if router.is_http_only() {
-        println!("✅ [服务端] HTTP专用模式，直接路由到HTTP处理器");
+        println!("✅ [服务端] HTTP 专用模式，直接路由到 HTTP 处理器");
         route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
         return Ok(());
-    } else if router.is_grpc_only() {
-        // gRPC 专用模式强制要求 TLS 证书
+    }
+
+    // 情况2: gRPC 专用模式 - 直接走 gRPC 处理（需要 TLS）
+    if router.is_grpc_only() {
         let cert_manager = tls_cert_manager
             .as_ref()
             .unwrap_or_else(|| {
                 panic!("gRPC 专用模式必须配置 TLS 证书！请在启动前配置证书。");
             });
-
-        println!("✅ [服务端] gRPC专用模式，使用 TLS 处理连接");
+        println!("✅ [服务端] gRPC 专用模式，使用 TLS 处理连接");
         route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, Some(cert_manager.clone())).await;
         return Ok(());
     }
 
-    // 执行协议检测
-    println!("🔍 [服务端] [DEBUG] 即将调用 psi_detector.detect()");
-    println!("🔍 [服务端] [DEBUG] 检测数据长度: {} 字节", detection_data.len());
-    println!("🔍 [服务端] [DEBUG] 检测数据内容: {:?}", &detection_data[..detection_data.len().min(64)]);
+    // 情况3: 混合模式 - 检测是 gRPC 还是 HTTP
+    // 单端口混合模式：检查是否为 gRPC，不是则默认为 HTTP
+    println!("🔍 [服务端] 混合模式 - 检测请求类型");
 
-    let detection_result = detector.detect(detection_data);
+    // 检查是否为 TLS 连接
+    let is_tls = detection_data.len() > 0 && detection_data[0] == 0x16;
 
-    println!("🔍 [服务端] [DEBUG] psi_detector.detect() 返回结果");
+    // 检查是否为 gRPC 请求
+    let is_grpc = is_grpc_request(detection_data);
 
-    match detection_result {
-        Ok(result) => {
-            let protocol_type = result.protocol_type();
-            let confidence = result.confidence();
-
-            println!("✅ [服务端] [DEBUG] psi_detector 检测成功");
-            println!("🔍 [服务端] [DEBUG] 检测到的协议: {:?}", protocol_type);
-            println!("🔍 [服务端] [DEBUG] 置信度: {:.1}%", confidence * 100.0);
-
-            rat_logger::info!("🎯 [服务端] psi_detector 检测结果: {} (置信度: {:.1}%, 协议: {:?})",
-                actual_remote_addr, confidence * 100.0, protocol_type);
-
-            // 如果是从PROXY protocol过来的，额外说明
-            if proxy_header_len > 0 {
-                rat_logger::info!("📋 [服务端] 通过 PROXY protocol v2 转发的 {} 请求", protocol_type);
-                rat_logger::debug!("🔍 [服务端] 使用更新后的客户端地址: {}", actual_remote_addr);
-            }
-
-            // 检查是否需要拦截
-            if should_block_protocol(&protocol_type, confidence) {
-                println!("🚫 [服务端] [DEBUG] 协议被拦截: {:?} (置信度: {:.1}%)", protocol_type, confidence * 100.0);
-                rat_logger::error!("🚫 [服务端] 拦截恶意或未知协议: {} (协议: {:?}, 置信度: {:.1}%)",
-                    actual_remote_addr, protocol_type, confidence * 100.0);
-
-                // 发送拦截响应并关闭连接
-                let block_response = b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"error\":\"Forbidden\",\"message\":\"Protocol blocked\"}";
-                let _ = stream.write_all(block_response).await;
-                let _ = stream.shutdown().await;
-                return Ok(());
-            }
-
-            // 根据检测结果路由到相应的处理器
-            println!("🚀 [服务端] [DEBUG] 准备路由到 {} 处理器", protocol_type);
-            rat_logger::info!("🚀 [服务端] 路由到 {} 处理器", protocol_type);
-            route_by_detected_protocol(stream, detection_data, protocol_type, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await
+    if is_tls {
+        // TLS 连接 - 先进行 TLS 握手，然后根据内容路由
+        println!("✅ [服务端] 检测到 TLS 连接，进行 TLS 握手");
+        route_by_detected_protocol(stream, detection_data, ProtocolType::TLS, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+        return Ok(());
+    } else if is_grpc {
+        // gRPC 请求（需要 TLS 证书）
+        if tls_cert_manager.is_some() {
+            println!("✅ [服务端] 检测到 gRPC 请求，使用 TLS 处理");
+            route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP2, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+            return Ok(());
+        } else {
+            println!("❌ [服务端] gRPC 请求需要 TLS 证书，但未配置");
+            return Err("gRPC 请求需要 TLS 证书".into());
         }
-        Err(e) => {
-            println!("❌ [服务端] [DEBUG] psi_detector 检测失败！");
-            println!("🔍 [服务端] [DEBUG] 错误信息: {}", e);
-            println!("🔍 [服务端] [DEBUG] 输入数据长度: {}", detection_data.len());
-            println!("🔍 [服务端] [DEBUG] 输入数据: {:?}", &detection_data[..detection_data.len().min(64)]);
-
-            debug!("🚫 [服务端] psi_detector 检测失败，疑似恶意探测，直接丢弃连接: {} (错误: {})", remote_addr, e);
-            crate::utils::logger::warn!("🚫 协议检测失败，疑似恶意探测，丢弃连接: {} (错误: {})", remote_addr, e);
-            // 直接关闭连接，不进行任何响应
-            drop(stream);
-            Ok(())
-        }
-    }
-}
-
-/// 判断是否应该拦截协议
-/// 作为纯 HTTP + gRPC 服务器库，只允许以下协议：
-/// - HTTP/1.0, HTTP/1.1, HTTP/2, HTTP/3 (HTTP 协议族)
-/// - gRPC (基于 HTTP/2)
-/// - TLS (用于 HTTPS)
-/// - 低置信度的未知协议（可能是 HTTP 变种）
-fn should_block_protocol(protocol_type: &ProtocolType, confidence: f32) -> bool {
-    match protocol_type {
-        // 允许的协议
-        ProtocolType::HTTP1_0 => false,  // HTTP/1.0 协议允许
-        ProtocolType::HTTP1_1 => false,  // HTTP/1.1 协议允许
-        ProtocolType::HTTP2 => false,    // HTTP/2 协议允许
-        ProtocolType::HTTP3 => false,    // HTTP/3 协议允许
-        ProtocolType::GRPC => false,     // gRPC 协议允许
-        ProtocolType::TLS => false,      // TLS 协议允许（用于 HTTPS）
-        ProtocolType::Unknown => {
-            // 对于未知协议，如果置信度很低（<0.5），可能是HTTP变种，允许尝试
-            // 如果置信度较高（>=0.5），说明确实是其他协议，应该拦截
-            confidence >= 0.5
-        }
-        
-        // 拦截的协议 - 所有非 HTTP/gRPC 协议
-        ProtocolType::WebSocket => true, // WebSocket 协议拦截
-        ProtocolType::SSH => true,       // SSH 协议拦截
-        ProtocolType::TCP => true,       // 原始 TCP 协议拦截
-        ProtocolType::QUIC => true,      // QUIC 协议拦截（除非是 HTTP/3）
-        ProtocolType::MQTT => true,      // MQTT 协议拦截
-        ProtocolType::UDP => true,       // UDP 协议拦截
-        
-        // 其他协议默认拦截
-        ProtocolType::FTP => true,       // FTP 协议拦截
-        ProtocolType::SMTP => true,      // SMTP 协议拦截
-        ProtocolType::DNS => true,       // DNS 协议拦截
-        ProtocolType::Redis => true,     // Redis 协议拦截
-        ProtocolType::MySQL => true,     // MySQL 协议拦截
-        ProtocolType::Custom => true,    // 自定义协议拦截
+    } else {
+        // 默认为 HTTP 请求
+        println!("✅ [服务端] 默认路由到 HTTP 处理器");
+        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+        return Ok(());
     }
 }
 
@@ -915,78 +870,122 @@ async fn handle_tls_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    println!("🔐 [服务端] handle_tls_connection 开始: {}", remote_addr);
     info!("🔐 [服务端] 开始 TLS 握手: {}", remote_addr);
 
     // 获取证书管理器
-    let cert_manager = cert_manager
-        .ok_or("TLS 连接需要证书管理器，但未配置")?;
+    let cert_manager = match cert_manager {
+        Some(m) => {
+            println!("✅ [服务端] 证书管理器存在");
+            m
+        }
+        None => {
+            println!("❌ [服务端] 证书管理器不存在");
+            return Err("TLS 连接需要证书管理器，但未配置".into());
+        }
+    };
 
     // 获取 HTTP 的 ServerConfig（如果没有证书，返回 None，允许降级到 HTTP/1.1）
+    println!("🔍 [服务端] 尝试获取 ServerConfig...");
     let server_config = {
+        println!("🔍 [服务端] 尝试获取读锁...");
         let cert_manager_guard = cert_manager.read()
             .map_err(|e| format!("无法获取证书管理器读锁: {}", e))?;
-        cert_manager_guard.get_http_server_config()
+        println!("✅ [服务端] 读锁获取成功");
+        let config = cert_manager_guard.get_http_server_config();
+        println!("🔍 [服务端] ServerConfig 结果: {:?}", config.is_some());
+        config
     };
+
+    debug!("🔍 [服务端] ServerConfig 获取结果: {:?}", server_config.is_some());
 
     if let Some(server_config) = server_config {
         // 有证书，使用 TLS
+        println!("✅ [服务端] ServerConfig 存在，开始 TLS accept...");
         let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
 
+        debug!("🔍 [服务端] 开始 TLS accept...");
         // 将泛型 stream 转换为 TcpStream（这里需要一些技巧）
         // 简化处理：假设 S 是 TcpStream
-        let tls_stream = acceptor.accept(stream).await
+        println!("🔍 [服务端] 调用 acceptor.accept()...");
+        let mut tls_stream = acceptor.accept(stream).await
             .map_err(|e| {
                 error!("❌ [服务端] TLS 握手失败: {}", e);
                 format!("TLS 握手失败: {}", e)
             })?;
+        println!("✅ [服务端] TLS accept 成功!");
 
         info!("✅ [服务端] TLS 握手成功: {}", remote_addr);
 
         // 获取 ALPN 协议
+        println!("🔍 [服务端] 获取 ALPN 协议...");
         let (_tcp_stream, conn) = tls_stream.get_ref();
         let alpn_protocol = conn.alpn_protocol().map(|p| p.to_vec());
+        println!("🔐 [服务端] ALPN 协议: {:?}", alpn_protocol);
         info!("🔐 [服务端] ALPN 协议: {:?}", alpn_protocol);
 
-        // HTTP 的 TLS 连接也强制要求 HTTP/2
-        if !crate::server::cert_manager::rustls_cert::AlpnProtocol::is_http2(&alpn_protocol) {
-            warn!("⚠️ [服务端] 非 HTTP/2 连接: ALPN={:?}, 客户端={}", alpn_protocol, remote_addr);
-            // HTTP 端口可以稍微宽容一些，允许继续处理
+        // TLS 模式强制要求 HTTP/2
+        let is_http2 = alpn_protocol.as_ref().map(|p| p == b"h2").unwrap_or(false);
+        println!("🔍 [服务端] is_http2 = {}", is_http2);
+
+        if !is_http2 {
+            // 拒绝非 HTTP/2 的 TLS 连接
+            warn!("🚫 [服务端] 拒绝非 HTTP/2 的 TLS 连接: ALPN={:?}, 客户端={}", alpn_protocol, remote_addr);
+            warn!("🚫 [服务端] TLS 模式强制要求 HTTP/2，请使用支持 HTTP/2 的客户端");
+
+            // 尝试发送 HTTP 426 响应（方便调试）
+            let response = b"HTTP/1.1 426 Upgrade Required\r\n\
+                Upgrade: HTTP/2.0\r\n\
+                Connection: Upgrade\r\n\
+                Content-Type: text/plain; charset=utf-8\r\n\
+                Content-Length: 76\r\n\
+                \r\n\
+                426 Upgrade Required: TLS mode requires HTTP/2 protocol\r\n\
+                Please use a client that supports HTTP/2 over TLS.\r\n";
+
+            use tokio::io::AsyncWriteExt;
+            let _ = tls_stream.write_all(response).await;
+            let _ = tls_stream.flush().await;
+            let _ = tls_stream.shutdown().await;
+
+            return Err("TLS 模式只支持 HTTP/2，已发送 426 响应".into());
         }
 
-        // 在 TLS 连接上建立 HTTP/2（内联 handle_h2_tls_connection 的逻辑）
-        use h2::server;
-        debug!("🔍 [服务端] 开始处理 HTTP/2 over TLS 连接: {}", remote_addr);
+        // HTTP/2 连接
+        println!("🚀 [服务端] HTTP/2 连接: {}", remote_addr);
+        info!("🚀 [服务端] HTTP/2 连接: {}", remote_addr);
 
-        let mut h2_builder = h2::server::Builder::default();
-        h2_builder.max_frame_size(1024 * 1024);
+        // 使用 hyper auto builder 处理 HTTP/2，通过 HyperAdapter 使用服务端连接池
+        println!("🔍 [服务端] 使用 hyper auto builder 处理 HTTP/2...");
+        use hyper_util::server::conn::auto::Builder as AutoBuilder;
 
-        let mut connection = h2_builder.handshake(tls_stream).await
-            .map_err(|e| {
-                error!("❌ [服务端] HTTP/2 over TLS 握手失败: {}", e);
-                format!("HTTP/2 over TLS 握手失败: {}", e)
-            })?;
+        let io = TokioIo::new(tls_stream);
+        let service = hyper::service::service_fn(move |req| {
+            let adapter = adapter.clone();
+            async move {
+                adapter.handle_request(req, Some(remote_addr)).await
+            }
+        });
 
-        info!("✅ [服务端] HTTP/2 over TLS 连接已建立: {}", remote_addr);
-
-        // 处理 HTTP/2 请求
-        while let Some(request_result) = connection.accept().await {
-            match request_result {
-                Ok((request, respond)) => {
-                    debug!("📥 [服务端] 接收到 HTTP/2 over TLS 请求: {} {}",
-                        request.method(), request.uri().path());
-
-                    let router_clone = router.clone();
-
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_h2_request(request, respond, remote_addr, router_clone).await {
-                            error!("❌ [服务端] 处理 HTTP/2 over TLS 请求失败: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("❌ [服务端] 接受 HTTP/2 over TLS 请求失败: {}", e);
-                    break;
-                }
+        if let Err(e) = AutoBuilder::new(hyper_util::rt::TokioExecutor::new())
+            .http2()
+            .enable_connect_protocol()
+            .serve_connection_with_upgrades(io, service)
+            .await
+        {
+            // 区分正常的客户端断开连接和真正的服务器错误
+            let error_msg = e.to_string();
+            if error_msg.contains("connection closed") ||
+               error_msg.contains("broken pipe") ||
+               error_msg.contains("connection reset") ||
+               error_msg.contains("unexpected end of file") ||
+               error_msg.contains("CANCELED") {
+                // 正常的客户端断开，只记录调试信息
+                debug!("🔌 [服务端] 客户端断开 TLS 连接: {} ({})", remote_addr, error_msg);
+            } else {
+                // 真正的服务器错误
+                error!("❌ [服务端] HTTP/2 over TLS 连接处理失败: {}", e);
+                return Err(format!("HTTP/2 over TLS 连接处理失败: {}", e).into());
             }
         }
 
@@ -996,6 +995,7 @@ where
         Err("HTTP 未配置证书，请降级到 HTTP/1.1".into())
     }
 }
+
 async fn handle_h2_tls_connection(
     tls_stream: TlsStream<tokio::net::TcpStream>,
     remote_addr: SocketAddr,

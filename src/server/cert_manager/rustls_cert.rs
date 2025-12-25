@@ -12,7 +12,6 @@ use std::sync::Arc;
 use rustls::server::{ServerConfig, ResolvesServerCertUsingSni};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::sign::CertifiedKey;
-use rustls::crypto::CryptoProvider;
 use rustls_pemfile::{certs, private_key};
 
 use crate::utils::logger::{info, error};
@@ -31,10 +30,8 @@ pub struct RustlsCertManager {
 impl RustlsCertManager {
     /// 从单个证书配置创建管理器
     pub fn from_config(cert_config: &super::config::CertConfig) -> Result<Self, String> {
-        // 安装 ring 作为 CryptoProvider
+        // 获取 provider（直接使用，不关心是否重复安装）
         let provider = rustls::crypto::ring::default_provider();
-        CryptoProvider::install_default(provider.clone())
-            .map_err(|e| format!("安装 CryptoProvider 失败: {:?}", e))?;
 
         info!("加载证书: {}", cert_config.cert_path.display());
 
@@ -87,15 +84,15 @@ impl RustlsCertManager {
 
         // 创建 ServerConfig，ALPN 只支持 h2
         let sni_resolver_arc = Arc::new(sni_resolver);
-        let server_config = Arc::new(
-            ServerConfig::builder()
-                .with_no_client_auth()
-                .with_cert_resolver(sni_resolver_arc.clone())
-        );
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(sni_resolver_arc.clone());
 
-        // 强制 ALPN 为 h2（HTTP/2）
-        // 注意：rustls 0.23 的 ALPN 设置方式已改变
-        // 我们需要在连接时检查 ALPN，而不是在 ServerConfig 中设置
+        // 设置 ALPN 协议，同时支持 HTTP/2 和 HTTP/1.1
+        // 这样 TLS 握手能成功完成，然后在应用层检查并拒绝非 HTTP/2
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        let server_config = Arc::new(server_config);
 
         info!("证书加载完成，共 {} 个域名", domains.len());
 
@@ -153,10 +150,8 @@ impl RustlsCertManager {
             return Err("证书目录中没有找到有效的证书".to_string());
         }
 
-        // 安装 ring 作为 CryptoProvider
+        // 获取 provider
         let provider = rustls::crypto::ring::default_provider();
-        CryptoProvider::install_default(provider.clone())
-            .map_err(|e| format!("安装 CryptoProvider 失败: {:?}", e))?;
 
         info!("预加载 SSL 证书...");
 
@@ -207,13 +202,17 @@ impl RustlsCertManager {
 
         info!("SSL 证书预加载完成，共 {} 个证书", domains.len());
 
-        // 创建 ServerConfig
+        // 创建 ServerConfig，ALPN 支持 HTTP/2 和 HTTP/1.1
         let sni_resolver_arc = Arc::new(sni_resolver);
-        let server_config = Arc::new(
-            ServerConfig::builder()
-                .with_no_client_auth()
-                .with_cert_resolver(sni_resolver_arc.clone())
-        );
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(sni_resolver_arc.clone());
+
+        // 设置 ALPN 协议，同时支持 HTTP/2 和 HTTP/1.1
+        // 这样 TLS 握手能成功完成，然后在应用层检查并拒绝非 HTTP/2
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        let server_config = Arc::new(server_config);
 
         Ok(Self {
             sni_resolver: sni_resolver_arc,
