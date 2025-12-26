@@ -21,6 +21,7 @@ use std::task::{Context, Poll};
 use futures_util::StreamExt;
 use bytes;
 use crate::utils::logger::{debug, info, warn, error};
+use tokio::io::AsyncReadExt;
 
 pub async fn handle_tls_connection<S>(
     stream: S,
@@ -296,4 +297,105 @@ where
 // ============ 已移除 H2C 支持 ============
 // handle_h2c_connection 和 handle_h2c_connection_with_stream 已移除
 // gRPC 服务端强制使用 TLS (HTTP/2-only)
+
+/// 处理 HTTP 专用端口的连接（简化版，跳过 gRPC 检测）
+///
+/// 此函数专为 HTTP 专用端口设计，会：
+/// 1. 检测 PROXY protocol（如果有）
+/// 2. 检测并处理 TLS（如果配置了证书）
+/// 3. 使用 hyper auto builder 处理 HTTP/1.1 和 HTTP/2
+/// 4. 跳过 gRPC 检测，提高性能
+pub async fn handle_http_dedicated_connection(
+    mut stream: tokio::net::TcpStream,
+    remote_addr: SocketAddr,
+    router: Arc<Router>,
+    adapter: Arc<HyperAdapter>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::io::AsyncWriteExt;
+
+    info!("🔗 [HTTP专用] 新连接: {}", remote_addr);
+
+    // 读取连接的前几个字节来检测 PROXY protocol 和 TLS
+    let mut buffer = [0u8; 1024];
+    let mut total_read = 0;
+
+    // 尝试读取数据
+    let read_result = tokio::time::timeout(
+        std::time::Duration::from_millis(1000),
+        async {
+            while total_read < buffer.len() {
+                match stream.read(&mut buffer[total_read..]).await {
+                    Ok(0) => break,
+                    Ok(n) => total_read += n,
+                    Err(e) => return Err(e),
+                }
+
+                if total_read >= 64 {
+                    break;
+                }
+            }
+            Ok(total_read)
+        }
+    ).await;
+
+    let bytes_read = match read_result {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            debug!("🚫 [HTTP专用] 读取数据失败: {} (错误: {})", remote_addr, e);
+            return Err(format!("读取数据失败: {}", e).into());
+        }
+        Err(_) => {
+            debug!("🚫 [HTTP专用] 读取超时: {}", remote_addr);
+            return Err("读取超时".into());
+        }
+    };
+
+    if bytes_read == 0 {
+        debug!("🔌 [HTTP专用] 连接立即关闭: {}", remote_addr);
+        return Ok(());
+    }
+
+    // 检查 PROXY protocol
+    let mut detection_data = &buffer[..bytes_read];
+    let mut actual_remote_addr = remote_addr;
+    let mut proxy_header_len = 0;
+
+    if crate::server::proxy_protocol::ProxyProtocolV2Parser::is_proxy_v2(detection_data) {
+        info!("📡 [HTTP专用] 检测到 PROXY protocol v2: {}", remote_addr);
+
+        // 计算并跳过 PROXY 头部
+        proxy_header_len = 16 + u16::from_be_bytes([detection_data[14], detection_data[15]]) as usize;
+
+        if let Ok(proxy_info) = crate::server::proxy_protocol::ProxyProtocolV2Parser::parse(detection_data) {
+            if let Some(client_ip) = proxy_info.client_ip() {
+                if let Some(client_port) = proxy_info.client_port() {
+                    actual_remote_addr = format!("{}:{}", client_ip, client_port).parse()?;
+                    info!("📍 [HTTP专用] PROXY protocol - 原始客户端地址: {}", actual_remote_addr);
+                }
+            }
+        }
+    }
+
+    // 检查是否为 TLS
+    let data_start = if proxy_header_len > 0 { proxy_header_len } else { 0 };
+    let is_tls = detection_data.len() > data_start && detection_data[data_start] == 0x16;
+
+    if is_tls {
+        // TLS 连接
+        info!("🔐 [HTTP专用] 检测到 TLS 连接: {}", actual_remote_addr);
+
+        let cert_manager = router.get_cert_manager()
+            .ok_or("HTTP专用端口检测到 TLS，但未配置证书")?;
+
+        let reconstructed_stream = crate::server::ReconstructedStream::new(stream, &buffer[..bytes_read]);
+        handle_tls_connection(reconstructed_stream, actual_remote_addr, router, adapter, Some(cert_manager)).await
+    } else {
+        // 直接 HTTP 连接
+        info!("🌐 [HTTP专用] 检测到 HTTP 连接: {}", actual_remote_addr);
+
+        let reconstructed_stream = crate::server::ReconstructedStream::new(stream, &buffer[..bytes_read]);
+        handle_http1_connection_with_stream(reconstructed_stream, actual_remote_addr, adapter).await
+    }
+}
+
 

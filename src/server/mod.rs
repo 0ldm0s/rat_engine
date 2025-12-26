@@ -54,14 +54,14 @@ use tokio_rustls::server::TlsStream;
 // 不再支持 H2C (HTTP/2 over cleartext)
 
 /// 重新构造的流，包含预读的数据
-struct ReconstructedStream {
+pub struct ReconstructedStream {
     inner: tokio::net::TcpStream,
     prefix: Vec<u8>,
     prefix_pos: usize,
 }
 
 impl ReconstructedStream {
-    fn new(stream: tokio::net::TcpStream, prefix: &[u8]) -> Self {
+    pub fn new(stream: tokio::net::TcpStream, prefix: &[u8]) -> Self {
         Self {
             inner: stream,
             prefix: prefix.to_vec(),
@@ -128,6 +128,7 @@ pub mod cache_middleware_impl;
 #[cfg(feature = "cache")]
 pub mod cache_version_manager;
 pub mod protocol_detection_middleware;
+pub mod protocol_detector;
 pub mod grpc_types;
 pub mod grpc_codec;
 pub mod cert_manager;
@@ -399,43 +400,6 @@ pub async fn detect_and_handle_protocol(
     detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, None).await
 }
 
-/// 简单的 gRPC 检测函数
-/// 检查数据是否为 gRPC 请求（基于 content-type 或 gRPC 帧格式）
-fn is_grpc_request(data: &[u8]) -> bool {
-    if data.is_empty() {
-        return false;
-    }
-
-    // 方法1: 检查是否为 TLS ClientHello (0x16 = TLS record)
-    // 如果是 TLS，需要 TLS 握手后才能判断内容
-    if data[0] == 0x16 {
-        // TLS 连接，返回 false 让 TLS 处理器接管
-        return false;
-    }
-
-    // 方法2: 检查是否为 HTTP/1.1 请求中的 gRPC
-    let data_str = String::from_utf8_lossy(data);
-    if data_str.contains("content-type:") || data_str.contains("Content-Type:") {
-        return data_str.contains("application/grpc");
-    }
-
-    // 方法3: 检查是否为 gRPC 二进制帧格式 (compressed-flag + 4-byte length)
-    // gRPC 消息格式: [1 byte compressed flag] [4 bytes message length] [message data]
-    if data.len() >= 5 {
-        // 检查前5字节是否可能是 gRPC 帧头
-        let compressed_flag = data[0];
-        if compressed_flag == 0 || compressed_flag == 1 {
-            let length = u32::from_be_bytes([data[1], data[2], data[3], data[4]]);
-            // 合理的 gRPC 消息长度（通常 < 16MB）
-            if length < 16 * 1024 * 1024 && data.len() >= 5 + length as usize {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 pub async fn detect_and_handle_protocol_with_tls(
     mut stream: tokio::net::TcpStream,
     remote_addr: SocketAddr,
@@ -600,7 +564,7 @@ pub async fn detect_and_handle_protocol_with_tls(
     let is_tls = detection_data.len() > 0 && detection_data[0] == 0x16;
 
     // 检查是否为 gRPC 请求
-    let is_grpc = is_grpc_request(detection_data);
+    let is_grpc = crate::server::protocol_detector::is_grpc_request(detection_data);
 
     if is_tls {
         // TLS 连接 - 先进行 TLS 握手，然后根据内容路由
