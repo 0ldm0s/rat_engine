@@ -160,14 +160,53 @@ where
 }
 
 
-/// HTTP/2 over TLS 连接处理（委托给 HTTP 专用模块）
+/// HTTP/2 over TLS 连接处理（使用本模块的 h2_request_handler）
 pub async fn handle_h2_tls_connection(
     tls_stream: TlsStream<tokio::net::TcpStream>,
     remote_addr: SocketAddr,
     router: Arc<Router>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    debug!("🌐 [HTTP连接] 委托给 HTTP 专用模块处理: {}", remote_addr);
-    crate::server::http_server::handle_h2_tls_connection(tls_stream, remote_addr, router).await
+    use h2::server;
+
+    debug!("🔍 [HTTP专用] 开始处理 HTTP/2 over TLS 连接: {}", remote_addr);
+
+    // 配置 HTTP/2 服务器
+    let mut h2_builder = h2::server::Builder::default();
+    h2_builder.max_frame_size(1024 * 1024);
+
+    // 创建 HTTP/2 服务器连接
+    let mut connection = h2_builder.handshake(tls_stream).await
+        .map_err(|e| {
+            error!("❌ [HTTP专用] HTTP/2 握手失败: {}", e);
+            format!("HTTP/2 握手失败: {}", e)
+        })?;
+
+    info!("✅ [HTTP专用] HTTP/2 连接已建立: {}", remote_addr);
+
+    // 处理 HTTP 请求
+    while let Some(request_result) = connection.accept().await {
+        match request_result {
+            Ok((request, respond)) => {
+                debug!("📥 [HTTP专用] 接收到 HTTP 请求: {} {}",
+                    request.method(), request.uri().path());
+
+                let router_clone = router.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = super::h2_request_handler::handle_h2_request(request, respond, remote_addr, router_clone).await {
+                        error!("❌ [HTTP专用] 处理 HTTP 请求失败: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                error!("❌ [HTTP专用] 接受请求失败: {}", e);
+                break;
+            }
+        }
+    }
+
+    debug!("🔌 [HTTP专用] 连接关闭: {}", remote_addr);
+    Ok(())
 }
 
 /// 处理 HTTP/1.1 连接

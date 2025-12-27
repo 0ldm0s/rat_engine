@@ -139,6 +139,16 @@ pub mod http_request;
 pub mod global_sse_manager;
 pub mod proxy_protocol;
 
+// 物理分离：HTTP 和 gRPC 独立服务器
+pub mod http_server;
+pub mod grpc_server;
+
+// 重新导出分离模块的函数
+pub use http_server::handle_http_dedicated_connection;
+pub use http_server::handle_tls_connection;
+pub use http_server::handle_h2_tls_connection;
+pub use grpc_server::handle_grpc_tls_connection;
+
 pub use config::ServerConfig;
 pub use port_config::{PortConfig, PortConfigBuilder, PortMode, PortConfigError, HttpsConfig, CertificateConfig};
 pub use router::Router;
@@ -675,15 +685,12 @@ async fn route_by_detected_protocol(
 mod h2_request_handler;
 pub use h2_request_handler::handle_h2_request;
 
-// HTTP 连接处理模块
+// HTTP 连接处理模块（委托到分离的 http_server）
 mod http_connection;
 pub use http_connection::{
-    handle_tls_connection,
-    handle_h2_tls_connection,
     handle_http1_connection,
     handle_http1_connection_with_stream,
 };
 
-// gRPC 连接处理模块
+// gRPC 连接处理模块（委托到分离的 grpc_server）
 mod grpc_connection;
-pub use grpc_connection::handle_grpc_tls_connection;

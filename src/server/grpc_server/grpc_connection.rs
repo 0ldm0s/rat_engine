@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncWrite};
 use h2::server;
 use hyper::Request;
+use tokio_rustls::server::TlsStream;
 use crate::utils::logger::{debug, info, error};
 
 pub async fn handle_grpc_tls_connection(
@@ -52,8 +53,55 @@ pub async fn handle_grpc_tls_connection(
 
     info!("✅ [gRPC] HTTP/2 连接验证通过: {}", remote_addr);
 
-    // 委托给 gRPC 专用模块处理
-    debug!("🔧 [gRPC连接] 委托给 gRPC 专用模块处理: {}", remote_addr);
-    crate::server::grpc_server::handle_grpc_h2_connection_internal(tls_stream, remote_addr, router).await
+    // 委托给内部处理函数
+    handle_grpc_h2_connection_internal(tls_stream, remote_addr, router).await
+}
+
+/// 内部函数：处理已建立的 TLS 连接上的 gRPC over HTTP/2
+pub async fn handle_grpc_h2_connection_internal<S>(
+    tls_stream: TlsStream<S>,
+    remote_addr: SocketAddr,
+    router: Arc<Router>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    debug!("🔧 [gRPC专用] 开始处理 gRPC over HTTP/2: {}", remote_addr);
+
+    let mut h2_builder = h2::server::Builder::default();
+    h2_builder.max_frame_size(1024 * 1024);
+
+    let mut connection = h2_builder.handshake(tls_stream).await
+        .map_err(|e| {
+            error!("❌ [gRPC专用] HTTP/2 握手失败: {}", e);
+            format!("HTTP/2 握手失败: {}", e)
+        })?;
+
+    info!("✅ [gRPC专用] HTTP/2 连接已建立: {}", remote_addr);
+
+    // 处理 gRPC 请求
+    while let Some(request_result) = connection.accept().await {
+        match request_result {
+            Ok((request, respond)) => {
+                debug!("📥 [gRPC专用] 接收到 gRPC 请求: {} {}",
+                    request.method(), request.uri().path());
+
+                let router_clone = router.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = super::h2_request_handler::handle_h2_request(request, respond, remote_addr, router_clone).await {
+                        error!("❌ [gRPC专用] 处理 gRPC 请求失败: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                error!("❌ [gRPC专用] 接受请求失败: {}", e);
+                break;
+            }
+        }
+    }
+
+    debug!("🔌 [gRPC专用] 连接关闭: {}", remote_addr);
+    Ok(())
 }
 
