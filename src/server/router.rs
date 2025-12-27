@@ -894,12 +894,7 @@ impl Router {
 
     /// 处理 HTTP 请求的主入口（通用结构体版本）
     pub async fn handle_http(&self, req: HttpRequest) -> Result<Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, hyper::Error> {
-        // 检查是否是 gRPC 请求（应该不会到这里，但保险起见）
-        if req.is_grpc() {
-            crate::utils::logger::warn!("gRPC 请求不应该到达 HTTP 处理器");
-            return Ok(self.create_error_response(StatusCode::BAD_REQUEST, "gRPC requests should be handled by HTTP/2 layer"));
-        }
-
+        // HTTP 和 gRPC 已物理分离，不再进行 gRPC 检测
         self.handle_http_internal(req).await
     }
 
