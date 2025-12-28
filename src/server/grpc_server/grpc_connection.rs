@@ -13,12 +13,15 @@ use hyper::Request;
 use tokio_rustls::server::TlsStream;
 use crate::utils::logger::{debug, info, error};
 
-pub async fn handle_grpc_tls_connection(
-    stream: tokio::net::TcpStream,
+pub async fn handle_grpc_tls_connection<S>(
+    stream: S,
     remote_addr: SocketAddr,
     router: Arc<Router>,
     cert_manager: Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     use h2::server;
 
     info!("🔐 [gRPC] 开始 TLS 握手: {}", remote_addr);

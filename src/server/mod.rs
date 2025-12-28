@@ -374,7 +374,7 @@ async fn handle_grpc_connection(
         });
 
     debug!("🔐 [gRPC] 使用 TLS 处理连接: {}", remote_addr);
-    crate::server::grpc_connection::handle_grpc_tls_connection(stream, remote_addr, router, cert_manager).await
+    crate::server::grpc_server::handle_grpc_tls_connection(stream, remote_addr, router, cert_manager).await
 }
 
 /// 处理单个连接，支持 HTTP/1.1、HTTP/2 和 gRPC
@@ -623,15 +623,25 @@ async fn route_by_detected_protocol(
         ProtocolType::HTTP2 => {
             // 处理 HTTP/2 请求
             // 检查是否是 TLS 连接上的 HTTP/2
-            // 通过检查数据开头是否是 TLS 记录类型 (0x16) 来判断
+            println!("🔍 [DEBUG] HTTP2 分支: buffer.len()={}, buffer[0]={:02x}", buffer.len(), if !buffer.is_empty() { buffer[0] } else { 0 });
             if !buffer.is_empty() && buffer[0] == 0x16 {
-                // 这是 TLS 连接上的 HTTP/2，需要先进行 TLS 握手
-                info!("🔐 [服务端] 检测到 TLS 上的 HTTP/2 连接，进行 TLS 握手: {}", remote_addr);
-                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
-                handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
+                // TLS 上的 HTTP/2，根据模式选择处理器
+                if router.is_grpc_only() {
+                    // gRPC 专用模式 - 使用 grpc_server
+                    info!("🔧 [服务端] gRPC 专用模式，路由到 gRPC 处理器: {}", remote_addr);
+                    let cert_manager = tls_cert_manager
+                        .unwrap_or_else(|| panic!("gRPC 专用模式必须配置 TLS 证书"));
+                    let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                    crate::server::grpc_server::handle_grpc_tls_connection(reconstructed_stream, remote_addr, router, cert_manager).await
+                } else {
+                    // HTTP 模式或混合模式 - 使用 http_server
+                    info!("🌐 [服务端] HTTP 模式，路由到 HTTP 处理器: {}", remote_addr);
+                    let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                    crate::server::http_server::handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
+                }
             } else {
                 // 拒绝 cleartext HTTP/2 (H2C)，强制要求 TLS
-                warn!("🚫 [服务端] 拒绝 cleartext HTTP/2 (H2C) 连接，gRPC 必须使用 TLS: {}", remote_addr);
+                warn!("🚫 [服务端] 拒绝 cleartext HTTP/2 (H2C) 连接，必须使用 TLS: {}", remote_addr);
                 Err("HTTP/2 over cleartext (H2C) 不再支持，请使用 TLS".into())
             }
         }
