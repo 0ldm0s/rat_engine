@@ -71,6 +71,8 @@ pub struct RatGrpcClient {
     // pub mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
     /// DNS解析映射表（域名 -> 预解析IP）
     pub dns_mapping: Option<std::collections::HashMap<String, String>>,
+    /// 是否启用 h2c-over-TLS 模式（Xray-core 风格：TLS 通道内传输 h2c）
+    pub h2c_over_tls: bool,
 }
 
 impl Clone for RatGrpcClient {
@@ -104,6 +106,7 @@ impl Clone for RatGrpcClient {
             //     }
             // }),
             dns_mapping: self.dns_mapping.clone(),
+            h2c_over_tls: self.h2c_over_tls,
         }
     }
 }

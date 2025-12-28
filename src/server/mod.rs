@@ -142,12 +142,14 @@ pub mod proxy_protocol;
 // 物理分离：HTTP 和 gRPC 独立服务器
 pub mod http_server;
 pub mod grpc_server;
+pub mod grpc_h2c_server;
 
 // 重新导出分离模块的函数
 pub use http_server::handle_http_dedicated_connection;
 pub use http_server::handle_tls_connection;
 pub use http_server::handle_h2_tls_connection;
 pub use grpc_server::handle_grpc_tls_connection;
+pub use grpc_h2c_server::handle_grpc_h2c_over_tls_connection;
 
 pub use config::ServerConfig;
 pub use port_config::{PortConfig, PortConfigBuilder, PortMode, PortConfigError, HttpsConfig, CertificateConfig};

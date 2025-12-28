@@ -62,6 +62,7 @@ impl RatGrpcClient {
         development_mode: bool,
         // mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>, // 暂时注释
         dns_mapping: Option<std::collections::HashMap<String, String>>,
+        h2c_over_tls: bool,
     ) -> Self {
         // 创建临时 client 实例用于获取 TLS 配置
         let temp_client = Self {
@@ -81,6 +82,7 @@ impl RatGrpcClient {
             delegated_manager: Arc::new(ClientBidirectionalManager::new(Arc::new(ClientConnectionPool::new(ConnectionPoolConfig::default())))),
             development_mode,
             dns_mapping: dns_mapping.clone(),
+            h2c_over_tls,
         };
 
         // 获取 TLS 配置
@@ -125,6 +127,7 @@ impl RatGrpcClient {
             development_mode,
             // mtls_config, // 暂时注释
             dns_mapping,
+            h2c_over_tls,
         }
     }
 

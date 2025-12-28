@@ -38,10 +38,16 @@ impl RatGrpcClient {
             .with_custom_certificate_verifier(Arc::new(NoVerification))
             .with_no_client_auth();
 
-        // 设置 ALPN 协议，gRPC 强制 HTTP/2
-        config.alpn_protocols = vec![b"h2".to_vec()];
+        // h2c-over-TLS 模式：禁用 ALPN，让代理认为是普通 TLS
+        if self.h2c_over_tls {
+            // 不设置 ALPN
+            info!("✅ 开发模式 TLS 配置完成（h2c-over-TLS 模式：无 ALPN）");
+        } else {
+            // 设置 ALPN 协议，gRPC 强制 HTTP/2
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            info!("✅ 开发模式 TLS 配置完成（ALPN: h2）");
+        }
 
-        info!("✅ 开发模式 TLS 配置完成（ALPN: h2）");
         Ok(Arc::new(config))
     }
 
@@ -58,10 +64,16 @@ impl RatGrpcClient {
             .with_platform_verifier()
             .with_no_client_auth();
 
-        // 设置 ALPN 协议，gRPC 强制 HTTP/2
-        config.alpn_protocols = vec![b"h2".to_vec()];
+        // h2c-over-TLS 模式：禁用 ALPN，让代理认为是普通 TLS
+        if self.h2c_over_tls {
+            // 不设置 ALPN
+            info!("✅ 标准模式 TLS 配置完成（h2c-over-TLS 模式：无 ALPN，使用系统证书）");
+        } else {
+            // 设置 ALPN 协议，gRPC 强制 HTTP/2
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            info!("✅ 标准模式 TLS 配置完成（使用系统证书，ALPN: h2）");
+        }
 
-        info!("✅ 标准模式 TLS 配置完成（使用系统证书，ALPN: h2）");
         Ok(Arc::new(config))
     }
 }

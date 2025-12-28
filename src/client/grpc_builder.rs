@@ -437,6 +437,101 @@ impl RatGrpcClientBuilder {
             compression_mode,
             development_mode,
             self.dns_mapping,
+            false,  // h2c_over_tls = false（标准模式）
+        ))
+    }
+
+    /// 构建 h2c-over-TLS 模式的 gRPC 客户端（Xray-core 风格）
+    ///
+    /// 此模式用于通过 HAProxy 等 HTTP 模式代理，特性：
+    /// - TLS 连接时不进行 ALPN 协商（让代理认为是普通 TLS）
+    /// - 在 TLS 通道内发送 h2c 格式的 HTTP/2 帧
+    /// - 代理无法解析 HTTP/2 帧，只能透传 TLS 流量
+    ///
+    /// # 错误
+    /// 如果任何必需的配置项未设置，将返回错误
+    ///
+    /// # 必需配置项
+    /// - connect_timeout: 连接超时时间
+    /// - request_timeout: 请求超时时间
+    /// - max_idle_connections: 最大空闲连接数
+    /// - http2_only: HTTP 协议模式
+    /// - user_agent: 用户代理字符串
+    /// - compression_mode: 压缩模式
+    pub fn build_h2c_over_tls(self) -> RatResult<RatGrpcClient> {
+        // 验证所有必需配置项
+        let connect_timeout = self.connect_timeout
+            .ok_or_else(|| RatError::RequestError("连接超时时间未设置".to_string()))?;
+
+        let request_timeout = self.request_timeout
+            .ok_or_else(|| RatError::RequestError("请求超时时间未设置".to_string()))?;
+
+        let max_idle_connections = self.max_idle_connections
+            .ok_or_else(|| RatError::RequestError("最大空闲连接数未设置".to_string()))?;
+
+        let http2_only = self.http2_only
+            .ok_or_else(|| RatError::RequestError("HTTP 协议模式未设置".to_string()))?;
+
+        let user_agent = self.user_agent
+            .ok_or_else(|| RatError::RequestError("用户代理字符串未设置".to_string()))?;
+
+        let compression_mode = self.compression_mode
+            .ok_or_else(|| RatError::RequestError("压缩模式未设置".to_string()))?;
+
+        let development_mode = self.development_mode.unwrap_or(false);  // 默认不启用开发模式
+
+        // 创建连接器
+        let mut connector = HttpConnector::new();
+        connector.set_connect_timeout(Some(connect_timeout));
+
+        // 创建客户端构建器
+        let mut client_builder = Client::builder(TokioExecutor::new());
+
+        // 配置 HTTP/2
+        let client = if http2_only {
+            // HTTP/2 prior knowledge 模式
+            client_builder
+                .http2_only(true)
+                .build(connector)
+        } else {
+            client_builder
+                .build(connector)
+        };
+
+        // 创建默认的压缩配置
+        let compression_config = {
+            #[cfg(feature = "compression")]
+            {
+                crate::compression::CompressionConfig::new()
+                    .enable_compression(compression_mode != GrpcCompressionMode::Disabled)
+                    .min_size(1024)
+                    .level(1)
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                // 当compression特性未启用时，创建一个默认配置
+                CompressionConfig {
+                    enabled: false,
+                    min_size: 1024,
+                    level: 1,
+                }
+            }
+        };
+
+        Ok(RatGrpcClient::new(
+            client,
+            connect_timeout,
+            request_timeout,
+            max_idle_connections,
+            user_agent,
+            compression_config,
+            compression_mode != GrpcCompressionMode::Disabled,
+            false,
+            3,
+            compression_mode,
+            development_mode,
+            self.dns_mapping,
+            true,  // h2c_over_tls = true
         ))
     }
 }
