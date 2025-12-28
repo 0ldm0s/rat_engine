@@ -1833,8 +1833,12 @@ impl Router {
     }
 
     /// 设置证书管理器
+    ///
+    /// 设置证书管理器后会自动启用 HTTP/2 支持
     pub fn set_cert_manager(&mut self, cert_manager: Arc<RwLock<CertificateManager>>) -> &mut Self {
         self.cert_manager = Some(cert_manager);
+        // 有证书时自动启用 HTTP/2（gRPC 和 HTTPS 都需要 HTTP/2）
+        self.enable_h2();
         self
     }
 

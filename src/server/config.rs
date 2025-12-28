@@ -116,9 +116,26 @@ impl ServerConfig {
         }
     }
     
-    /// 创建分端口模式的服务器配置
+    /// 创建分端口模式的服务器配置（绑定到 localhost）
     pub fn separated_ports(http_port: u16, grpc_port: u16, workers: usize) -> Result<Self, super::port_config::PortConfigError> {
         let port_config = PortConfig::separated_localhost(http_port, grpc_port)?;
+        Ok(Self::with_port_config(port_config, workers))
+    }
+
+    /// 创建分端口模式的服务器配置（绑定到所有地址 0.0.0.0）
+    pub fn separated_ports_any(http_port: u16, grpc_port: u16, workers: usize) -> Result<Self, super::port_config::PortConfigError> {
+        let port_config = PortConfig::separated_any(http_port, grpc_port)?;
+        Ok(Self::with_port_config(port_config, workers))
+    }
+
+    /// 创建分端口模式的服务器配置（绑定到指定地址）
+    pub fn separated_ports_with_addr(
+        http_port: u16,
+        grpc_port: u16,
+        bind_addr: std::net::IpAddr,
+        workers: usize,
+    ) -> Result<Self, super::port_config::PortConfigError> {
+        let port_config = PortConfig::separated_with_addr(http_port, grpc_port, bind_addr)?;
         Ok(Self::with_port_config(port_config, workers))
     }
     

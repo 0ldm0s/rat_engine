@@ -198,8 +198,11 @@ pub fn create_engine_builder() -> crate::engine::RatEngineBuilder {
 }
 
 /// 分端口模式启动服务器
-async fn run_separated_server(config: ServerConfig, router: Router) -> crate::error::RatResult<()> {
-    let router = Arc::new(router);
+pub async fn run_separated_server(
+    config: ServerConfig,
+    router: Arc<Router>,
+    cert_manager: Option<Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>>,
+) -> crate::error::RatResult<()> {
     let adapter = Arc::new(HyperAdapter::new(router.clone()));
 
     // 获取 HTTP 和 gRPC 地址
@@ -281,16 +284,18 @@ async fn run_separated_server(config: ServerConfig, router: Router) -> crate::er
     let http_server_loop = {
         let router = router.clone();
         let adapter = adapter.clone();
+        let cert_mgr = cert_manager.clone();
         async move {
             loop {
                 let (stream, remote_addr) = http_listener.accept().await
                     .map_err(|e| crate::error::RatError::IoError(e))?;
-                
+
                 let router_clone = router.clone();
                 let adapter_clone = adapter.clone();
-                
+                let cert_mgr_clone = cert_mgr.clone();
+
                 tokio::task::spawn(async move {
-                    if let Err(err) = handle_http_connection(stream, remote_addr, router_clone, adapter_clone).await {
+                    if let Err(err) = handle_http_connection_with_cert(stream, remote_addr, router_clone, adapter_clone, cert_mgr_clone).await {
                         let err_str = err.to_string();
                         if err_str.contains("IncompleteMessage") || err_str.contains("connection closed") {
                             crate::utils::logger::debug!("HTTP client disconnected: {:?}", err);
@@ -307,16 +312,18 @@ async fn run_separated_server(config: ServerConfig, router: Router) -> crate::er
     let grpc_server_loop = {
         let router = router.clone();
         let adapter = adapter.clone();
+        let cert_mgr = cert_manager.clone();
         async move {
             loop {
                 let (stream, remote_addr) = grpc_listener.accept().await
                     .map_err(|e| crate::error::RatError::IoError(e))?;
-                
+
                 let router_clone = router.clone();
                 let adapter_clone = adapter.clone();
-                
+                let cert_mgr_clone = cert_mgr.clone();
+
                 tokio::task::spawn(async move {
-                    if let Err(err) = handle_grpc_connection(stream, remote_addr, router_clone, adapter_clone).await {
+                    if let Err(err) = handle_grpc_connection_with_cert(stream, remote_addr, router_clone, adapter_clone, cert_mgr_clone).await {
                         let err_str = err.to_string();
                         if err_str.contains("IncompleteMessage") || err_str.contains("connection closed") {
                             crate::utils::logger::debug!("gRPC client disconnected: {:?}", err);
@@ -344,38 +351,58 @@ async fn run_separated_server(config: ServerConfig, router: Router) -> crate::er
     }
 }
 
-/// 处理 HTTP 连接（分端口模式）
+/// 处理 HTTP 连接（分端口模式，带证书管理器）
+async fn handle_http_connection_with_cert(
+    stream: tokio::net::TcpStream,
+    remote_addr: SocketAddr,
+    router: Arc<Router>,
+    adapter: Arc<HyperAdapter>,
+    cert_manager: Option<Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    crate::utils::logger::debug!("🔗 [HTTP] 新连接: {}", remote_addr);
+
+    // 在分端口模式下，传递证书管理器
+    detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, cert_manager).await
+}
+
+/// 处理 HTTP 连接（分端口模式，无证书管理器 - 兼容旧代码）
 async fn handle_http_connection(
     stream: tokio::net::TcpStream,
     remote_addr: SocketAddr,
     router: Arc<Router>,
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    crate::utils::logger::debug!("🔗 [HTTP] 新连接: {}", remote_addr);
-    
-    // 在分端口模式下，HTTP 端口只处理 HTTP 协议
-    // 直接复用现有的协议检测逻辑，但只允许 HTTP 协议
-    detect_and_handle_protocol(stream, remote_addr, router, adapter).await
+    handle_http_connection_with_cert(stream, remote_addr, router, adapter, None).await
 }
 
-/// 处理 gRPC 连接（分端口模式）
+/// 处理 gRPC 连接（分端口模式，带证书管理器）
+async fn handle_grpc_connection_with_cert(
+    stream: tokio::net::TcpStream,
+    remote_addr: SocketAddr,
+    router: Arc<Router>,
+    adapter: Arc<HyperAdapter>,
+    cert_manager: Option<Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    crate::utils::logger::debug!("🔗 [gRPC] 新连接: {}", remote_addr);
+
+    let cert_mgr = cert_manager.unwrap_or_else(|| {
+        panic!("gRPC 服务必须配置 TLS 证书！请在启动前配置证书。");
+    });
+
+    debug!("🔐 [gRPC] 使用 TLS 处理连接: {}", remote_addr);
+    crate::server::grpc_server::handle_grpc_tls_connection(stream, remote_addr, router, cert_mgr).await
+}
+
+/// 处理 gRPC 连接（分端口模式，无证书管理器 - 兼容旧代码）
 async fn handle_grpc_connection(
     stream: tokio::net::TcpStream,
     remote_addr: SocketAddr,
     router: Arc<Router>,
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    crate::utils::logger::debug!("🔗 [gRPC] 新连接: {}", remote_addr);
-
-    // gRPC 强制要求 TLS 证书
-    let cert_manager = router.get_cert_manager()
-        .unwrap_or_else(|| {
-            panic!("gRPC 服务必须配置 TLS 证书！请在启动前配置证书。");
-        });
-
-    debug!("🔐 [gRPC] 使用 TLS 处理连接: {}", remote_addr);
-    crate::server::grpc_server::handle_grpc_tls_connection(stream, remote_addr, router, cert_manager).await
+    handle_grpc_connection_with_cert(stream, remote_addr, router.clone(), adapter, router.get_cert_manager()).await
 }
+
 
 /// 处理单个连接，支持 HTTP/1.1、HTTP/2 和 gRPC
 async fn handle_connection(
@@ -406,8 +433,9 @@ pub async fn detect_and_handle_protocol(
     router: Arc<Router>,
     adapter: Arc<HyperAdapter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // 调用带有TLS支持的版本，但不传递证书管理器
-    detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, None).await
+    // 从 router 获取证书管理器并传递给 TLS 版本
+    let tls_cert_manager = router.get_cert_manager();
+    detect_and_handle_protocol_with_tls(stream, remote_addr, router, adapter, tls_cert_manager).await
 }
 
 pub async fn detect_and_handle_protocol_with_tls(
@@ -617,6 +645,7 @@ async fn route_by_detected_protocol(
         }
         ProtocolType::TLS => {
             info!("🔐 [服务端] 检测到 TLS 连接，进行 TLS 握手: {}", remote_addr);
+            println!("🔍 [DEBUG] TLS 分支: tls_cert_manager.is_some()={}", tls_cert_manager.is_some());
             let reconstructed_stream = ReconstructedStream::new(stream, buffer);
             handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
         }

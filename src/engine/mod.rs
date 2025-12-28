@@ -318,7 +318,13 @@ impl RatEngineBuilder {
         self.cert_manager = Some(Arc::new(std::sync::RwLock::new(cert_manager)));
         self
     }
-    
+
+    /// 配置服务器（包括分端口模式）
+    pub fn server_config(mut self, config: crate::server::config::ServerConfig) -> Self {
+        self.server_config = config;
+        self
+    }
+
     /// 获取证书管理器的引用（用于测试和高级配置）
     pub fn get_cert_manager(&self) -> Option<&Arc<std::sync::RwLock<crate::server::cert_manager::CertificateManager>>> {
         self.cert_manager.as_ref()
@@ -504,14 +510,28 @@ impl RatEngineBuilder {
                 metrics.clone()
             )
         ));
-        
+
+        // 将证书管理器设置到 router（如果有的话）
+        // 这样可以自动启用 HTTP/2 支持
+        let router = if let Some(cert_mgr) = &self.cert_manager {
+            if let Some(router) = self.router {
+                let mut r = router.clone();
+                r.set_cert_manager(cert_mgr.clone());
+                Some(Arc::new(r))
+            } else {
+                None
+            }
+        } else {
+            self.router.map(Arc::new)
+        };
+
         Ok(ActualRatEngine {
             work_queue,
             connection_pool,
             memory_pool,
             smart_transfer,
             congestion_control,
-            router: self.router.map(Arc::new),
+            router,
             cert_manager: self.cert_manager,
             metrics,
             config: self.engine_config,
@@ -529,10 +549,17 @@ impl RatEngineBuilder {
 }
 
 impl ActualRatEngine {
-    /// 启动服务器
+    /// 启动服务器（单端口模式）
+    ///
+    /// 如果配置了分端口模式，请使用 `start_separated()` 方法
     pub async fn start(&self, host: String, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
-        
+
+        // 检查是否为分端口模式，如果是则报错
+        if self.server_config.is_separated_mode() {
+            return Err("分端口模式请使用 start_separated() 方法，而不是 start()".into());
+        }
+
         // 初始化性能优化（包含所有配置信息输出）
         if let Some(log_config) = &self.server_config.log_config {
             crate::server::performance::init_performance_optimization(self.config.worker_threads, log_config)?;
@@ -655,7 +682,24 @@ impl ActualRatEngine {
             }
         }
     }
-    
+
+    /// 启动服务器（分端口模式）
+    ///
+    /// 如果配置了单端口模式，请使用 `start(host, port)` 方法
+    pub async fn start_separated(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 检查是否不是分端口模式，如果是则报错
+        if !self.server_config.is_separated_mode() {
+            return Err("单端口模式请使用 start(host, port) 方法，而不是 start_separated()".into());
+        }
+
+        // 调用分端口服务器，传递证书管理器
+        crate::server::run_separated_server(
+            self.server_config.clone(),
+            self.router.clone().ok_or("分端口模式必须配置路由器")?,
+            self.cert_manager.clone()
+        ).await.map_err(|e| e.into())
+    }
+
     /// 启动工作线程
     async fn start_workers(&self) {
         let mut handles = self.worker_handles.lock().await;
