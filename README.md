@@ -390,7 +390,9 @@ RAT Engine 完全支持 HAProxy 负载均衡器，包括：
 - ✅ **PROXY Protocol v2 支持** - 获取原始客户端 IP 地址
 - ✅ **HTTP/2 协议支持** - 通过 ALPN 协商
 
-📖 **详细配置指南**: [HAProxy 配置指南](docs/haproxy_configuration.md)
+📖 **详细配置指南**:
+- [HAProxy 配置指南](docs/haproxy_configuration.md) - 基础配置和 PROXY protocol
+- [HAProxy HTTP 模式 gRPC 代理测试指南](docs/haproxy_http_mode_grpc.md) - HTTP 模式下 gRPC 代理完整测试结果
 
 ### 运行示例
 
