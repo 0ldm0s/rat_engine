@@ -49,9 +49,15 @@ where
     info!("🔐 [gRPC] ALPN 协议: {:?}", alpn_protocol);
 
     // 检查 ALPN 是否为 h2，gRPC 强制要求 HTTP/2
-    if !crate::server::cert_manager::rustls_cert::AlpnProtocol::is_http2(&alpn_protocol) {
+    // 注意：如果客户端使用 h2c-over-TLS 模式（Xray-core 风格），ALPN 可能为 None
+    // 我们仍然接受这种连接，因为客户端会在 TLS 通道内发送 h2c 帧
+    if alpn_protocol.is_some() && !crate::server::cert_manager::rustls_cert::AlpnProtocol::is_http2(&alpn_protocol) {
         error!("❌ [gRPC] 拒绝非 HTTP/2 连接: ALPN={:?}, 客户端={}", alpn_protocol, remote_addr);
         return Err(format!("gRPC 只支持 HTTP/2，客户端协商的 ALPN 协议: {:?}", alpn_protocol).into());
+    }
+
+    if alpn_protocol.is_none() {
+        info!("⚠️  [gRPC] 无 ALPN 协商，可能是 h2c-over-TLS 模式，继续处理");
     }
 
     info!("✅ [gRPC] HTTP/2 连接验证通过: {}", remote_addr);

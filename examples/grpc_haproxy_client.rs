@@ -42,19 +42,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("🔌 RAT Engine gRPC h2c-over-TLS 客户端 (Xray-core 风格)");
     println!("====================================================");
     println!("模式: TLS 通道内传输 h2c，无 ALPN 协商");
-    println!("连接地址: https://ligproxy-test.0ldm0s.net:50051");
+    println!("连接地址: https://ligproxy-test.0ldm0s.net:8443 (通过 HAProxy)");
     println!();
 
-    // 创建 h2c-over-TLS 客户端
+    // 创建标准 gRPC 客户端（带 ALPN h2）
+    // 测试通过 HAProxy 的标准 gRPC 通信
     let mut client = RatGrpcClientBuilder::new()
         .connect_timeout(Duration::from_secs(5))?
         .request_timeout(Duration::from_secs(10))?
         .max_idle_connections(5)?
         .http2_only()
-        .user_agent("rat-engine-grpc-h2c-over-tls/1.0")?
+        .user_agent("rat-engine-grpc-standard/1.0")?
         .disable_compression()
-        .development_mode()  // 跳过证书验证（测试自签名证书）
-        .build_h2c_over_tls()?;
+        .development_mode()
+        .build()?;
 
     println!("✅ h2c-over-TLS 客户端创建成功");
     println!();
@@ -66,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     match client.call_typed_with_uri::<HelloRequest, HelloResponse>(
-        "https://ligproxy-test.0ldm0s.net:50051",
+        "https://ligproxy-test.0ldm0s.net:8443",
         "hello.HelloService",
         "Hello",
         hello_request,
@@ -91,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     match client.call_typed_with_uri::<PingRequest, PingResponse>(
-        "https://ligproxy-test.0ldm0s.net:50051",
+        "https://ligproxy-test.0ldm0s.net:8443",
         "ping.PingService",
         "Ping",
         ping_request,
