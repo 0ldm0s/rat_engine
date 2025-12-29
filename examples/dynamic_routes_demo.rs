@@ -13,12 +13,30 @@ async fn handle_user_info(req: HttpRequest) -> Result<Response<Full<Bytes>>, rat
     let user_id = req.param_as_i64("id").unwrap_or(0);
     let path = req.path();
 
+    // 输出请求头信息（用于测试）
+    println!("=== 请求头信息 ===");
+    println!("远程地址: {:?}", req.remote_addr);
+    for (name, value) in req.headers.iter() {
+        println!("  {}: {:?}", name, value);
+    }
+    println!("==================");
+
+    // 收集所有请求头到响应中
+    let mut headers_map = serde_json::Map::new();
+    for (name, value) in req.headers.iter() {
+        if let Ok(value_str) = value.to_str() {
+            headers_map.insert(name.to_string(), json!(value_str));
+        }
+    }
+
     let response_data = json!({
         "user_id": user_id,
         "name": format!("用户{}", user_id),
         "email": format!("user{}@example.com", user_id),
         "status": "active",
-        "path_matched": path
+        "path_matched": path,
+        "remote_addr": format!("{:?}", req.remote_addr),
+        "headers": headers_map
     });
 
     Ok(Response::builder()
