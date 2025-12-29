@@ -553,18 +553,53 @@ impl ActualRatEngine {
     ///
     /// 如果配置了分端口模式，请使用 `start_separated()` 方法
     pub async fn start(&self, host: String, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 重定向到更明确的方法名
+        self.start_single_port_multi_protocol(host, port).await
+    }
+
+    /// 启动服务器（单端口多协议模式）
+    ///
+    /// 单端口同时支持 HTTP 和 gRPC，自动检测协议类型
+    ///
+    /// # 参数
+    /// * `host` - 绑定地址（如 "127.0.0.1" 或 "0.0.0.0"）
+    /// * `port` - 绑定端口
+    ///
+    /// # 协议检测
+    /// 服务器会自动检测每个连接的协议类型：
+    /// - HTTP/1.1
+    /// - HTTP/2 (h2)
+    /// - gRPC (基于 HTTP/2)
+    /// - TLS 加密连接
+    ///
+    /// # 与 start_separated() 的区别
+    /// - `start_single_port_multi_protocol()` - 单端口，自动检测协议
+    /// - `start_separated()` - 多端口，物理分离 HTTP 和 gRPC
+    ///
+    /// # 示例
+    /// ```ignore
+    /// let engine = RatEngine::builder()
+    ///     .worker_threads(4)
+    ///     .router(router)
+    ///     .certificate_manager(cert_manager)
+    ///     .build()?;
+    ///
+    /// // 单端口模式：HTTP 和 gRPC 共用同一端口
+    /// engine.start_single_port_multi_protocol("0.0.0.0".to_string(), 8443).await?;
+    /// ```
+    pub async fn start_single_port_multi_protocol(&self, host: String, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
         // 检查是否为分端口模式，如果是则报错
         if self.server_config.is_separated_mode() {
-            return Err("分端口模式请使用 start_separated() 方法，而不是 start()".into());
+            return Err("分端口模式请使用 start_separated() 方法，而不是 start_single_port_multi_protocol()".into());
         }
 
         // 初始化性能优化（包含所有配置信息输出）
         if let Some(log_config) = &self.server_config.log_config {
             crate::server::performance::init_performance_optimization(self.config.worker_threads, log_config)?;
         }
-        
+
         // 确保 CryptoProvider 只安装一次
         crate::utils::crypto_provider::ensure_crypto_provider_installed();
         
@@ -685,7 +720,8 @@ impl ActualRatEngine {
 
     /// 启动服务器（分端口模式）
     ///
-    /// 如果配置了单端口模式，请使用 `start(host, port)` 方法
+    /// 用于 HTTP 和 gRPC 物理分离的场景（不同端口）
+    /// 如果配置了单端口模式，请使用 `start_single_port_multi_protocol()` 方法
     pub async fn start_separated(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // 检查是否不是分端口模式，如果是则报错
         if !self.server_config.is_separated_mode() {

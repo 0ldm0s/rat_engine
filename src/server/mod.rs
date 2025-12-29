@@ -143,6 +143,7 @@ pub mod proxy_protocol;
 pub mod http_server;
 pub mod grpc_server;
 pub mod grpc_h2c_server;
+pub mod multi_protocol_adapter;
 
 // 重新导出分离模块的函数
 pub use http_server::handle_http_dedicated_connection;
@@ -648,8 +649,28 @@ async fn route_by_detected_protocol(
         ProtocolType::TLS => {
             info!("🔐 [服务端] 检测到 TLS 连接，进行 TLS 握手: {}", remote_addr);
             println!("🔍 [DEBUG] TLS 分支: tls_cert_manager.is_some()={}", tls_cert_manager.is_some());
-            let reconstructed_stream = ReconstructedStream::new(stream, buffer);
-            handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
+
+            // 判断使用哪种处理器
+            if router.is_grpc_only() {
+                // gRPC 专用模式 - 使用 grpc_server
+                info!("🔧 [服务端] gRPC 专用模式，路由到 gRPC 处理器: {}", remote_addr);
+                let cert_manager = tls_cert_manager
+                    .unwrap_or_else(|| panic!("gRPC 专用模式必须配置 TLS 证书"));
+                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                crate::server::grpc_server::handle_grpc_tls_connection(reconstructed_stream, remote_addr, router, cert_manager).await
+            } else if router.is_http_only() {
+                // HTTP 专用模式 - 使用 http_server
+                info!("🌐 [服务端] HTTP 专用模式，路由到 HTTP 处理器: {}", remote_addr);
+                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
+            } else {
+                // 单端口多协议模式 - 使用新的多协议适配器
+                info!("🔀 [服务端] 单端口多协议模式，使用多协议适配器: {}", remote_addr);
+                let cert_manager = tls_cert_manager
+                    .unwrap_or_else(|| panic!("单端口多协议模式必须配置 TLS 证书"));
+                let reconstructed_stream = ReconstructedStream::new(stream, buffer);
+                crate::server::multi_protocol_adapter::handle_multi_protocol_tls_connection(reconstructed_stream, remote_addr, router, adapter, cert_manager).await
+            }
         }
         ProtocolType::HTTP2 => {
             // 处理 HTTP/2 请求
