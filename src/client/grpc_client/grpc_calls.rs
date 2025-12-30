@@ -44,9 +44,9 @@ impl RatGrpcClient {
     /// * `enable_retry` - 是否启用自动重试
     /// * `max_retries` - 最大重试次数
     /// * `compression_mode` - 压缩模式
-    /// * `h2c_mode` - 是否启用开发模式（跳过证书验证）
+    /// * `h2c_mode` - 是否启用 h2c 模式（跳过证书验证）
+    /// * `mtls_config` - mTLS 客户端配置
     /// * `dns_mapping` - DNS 预解析映射表
-    // mTLS 配置暂时注释，专注 TLS/SSL
     #[doc(hidden)]
     pub fn new(
         client: Client<HttpConnector, Full<Bytes>>,
@@ -60,7 +60,7 @@ impl RatGrpcClient {
         max_retries: u32,
         compression_mode: GrpcCompressionMode,
         h2c_mode: bool,
-        // mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>, // 暂时注释
+        mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
         dns_mapping: Option<std::collections::HashMap<String, String>>,
         h2c_over_tls: bool,
     ) -> Self {
@@ -81,6 +81,7 @@ impl RatGrpcClient {
             stream_id_counter: std::sync::atomic::AtomicU64::new(1),
             delegated_manager: Arc::new(ClientBidirectionalManager::new(Arc::new(ClientConnectionPool::new(ConnectionPoolConfig::default())))),
             h2c_mode,
+            mtls_config: mtls_config.clone(),
             dns_mapping: dns_mapping.clone(),
             h2c_over_tls,
         };
@@ -97,9 +98,9 @@ impl RatGrpcClient {
             cleanup_interval: Duration::from_secs(60),
             max_connections_per_target: max_idle_connections,
             h2c_mode,
-            mtls_config: None, // 暂时注释 mTLS
+            mtls_config: mtls_config.clone(),
             tls_config,
-            };
+        };
 
         // 创建连接池
         let mut connection_pool = ClientConnectionPool::new(pool_config);
@@ -125,7 +126,7 @@ impl RatGrpcClient {
             stream_id_counter: std::sync::atomic::AtomicU64::new(1),
             delegated_manager,
             h2c_mode,
-            // mtls_config, // 暂时注释
+            mtls_config,
             dns_mapping,
             h2c_over_tls,
         }

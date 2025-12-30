@@ -24,46 +24,30 @@ pub struct CompressionConfig {
 }
 
 // =============================================================================
-// mTLS 客户端配置 (暂时注释，专注 TLS/SSL)
+// mTLS 客户端配置（rustls 版本）
 // =============================================================================
-//
-// /// mTLS 客户端配置
-// #[derive(Debug)]
-// pub struct MtlsClientConfig {
-//     /// 客户端证书链
-//     pub client_cert_chain: Vec<Vec<u8>>,
-//     /// 客户端私钥
-//     pub client_private_key: Vec<u8>,
-//     /// 自定义 CA 证书（可选，用于验证服务器证书）
-//     pub ca_certs: Option<Vec<Vec<u8>>>,
-//     /// 是否跳过服务器证书验证（仅开发模式）
-//     pub skip_server_verification: bool,
-//     /// 服务器名称（用于 SNI）
-//     pub server_name: Option<String>,
-//     /// 客户端证书文件路径（用于调试日志）
-//     pub client_cert_path: Option<String>,
-//     /// 客户端私钥文件路径（用于调试日志）
-//     pub client_key_path: Option<String>,
-//     /// CA 证书文件路径（用于调试日志）
-//     pub ca_cert_path: Option<String>,
-// }
-//
-// impl Clone for MtlsClientConfig {
-//     fn clone(&self) -> Self {
-//         Self {
-//             client_cert_chain: self.client_cert_chain.clone(),
-//             client_private_key: self.client_private_key.clone(),
-//             ca_certs: self.ca_certs.clone(),
-//             skip_server_verification: self.skip_server_verification,
-//             server_name: self.server_name.clone(),
-//             client_cert_path: self.client_cert_path.clone(),
-//             client_key_path: self.client_key_path.clone(),
-//             ca_cert_path: self.ca_cert_path.clone(),
-//         }
-//     }
-// }
-//
+
+/// mTLS 客户端配置
+#[derive(Debug, Clone)]
+pub struct MtlsClientConfig {
+    /// 客户端证书链（PEM 格式）
+    pub client_cert_chain: Vec<Vec<u8>>,
+    /// 客户端私钥（PEM 格式）
+    pub client_private_key: Vec<u8>,
+    /// 自定义 CA 证书（可选，用于验证服务器证书）
+    pub ca_certs: Option<Vec<Vec<u8>>>,
+    /// 服务器名称（用于 SNI）
+    pub server_name: Option<String>,
+    /// 客户端证书文件路径（用于调试日志）
+    pub client_cert_path: Option<String>,
+    /// 客户端私钥文件路径（用于调试日志）
+    pub client_key_path: Option<String>,
+    /// CA 证书文件路径（用于调试日志）
+    pub ca_cert_path: Option<String>,
+}
+
 // =============================================================================
+
 
 
 /// RAT Engine gRPC+Bincode 客户端构建器
@@ -87,8 +71,8 @@ pub struct RatGrpcClientBuilder {
     /// 是否启用 h2c-over-TLS 模式
     /// 警告：此模式会跳过 TLS 证书验证，仅用于通过 HTTP 代理传输 h2c 流
     h2c_mode: Option<bool>,
-    // /// mTLS 配置 (暂时注释)
-    // mtls_config: Option<MtlsClientConfig>,
+    /// mTLS 配置
+    mtls_config: Option<MtlsClientConfig>,
     /// DNS解析映射表（域名 -> 预解析IP）
     dns_mapping: Option<std::collections::HashMap<String, String>>,
 }
@@ -106,7 +90,7 @@ impl RatGrpcClientBuilder {
             user_agent: None,
             compression_mode: None,
             h2c_mode: None,
-            // mtls_config: None,
+            mtls_config: None,
             dns_mapping: None,
         }
     }
@@ -238,79 +222,140 @@ impl RatGrpcClientBuilder {
 
 
     // =============================================================================
-    // mTLS 方法 (暂时注释，专注 TLS/SSL)
+    // mTLS 方法（rustls 版本）
     // =============================================================================
-    //
-    // /// 配置 mTLS 客户端认证
-    // ///
-    // /// 启用双向 TLS 认证，客户端将提供证书给服务器验证
-    // ///
-    // /// # 参数
-    // /// - `client_cert_chain`: 客户端证书链
-    // /// - `client_private_key`: 客户端私钥
-    // /// - `ca_certs`: 可选的 CA 证书，用于验证服务器证书
-    // /// - `skip_server_verification`: 是否跳过服务器证书验证（仅开发模式）
-    // /// - `server_name`: 可选的服务器名称，用于 SNI
-    // /// - `client_cert_path`: 客户端证书文件路径（用于调试日志）
-    // /// - `client_key_path`: 客户端私钥文件路径（用于调试日志）
-    // /// - `ca_cert_path`: CA 证书文件路径（用于调试日志）
-    // ///
-    // /// # 返回值
-    // /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
-    // pub fn with_mtls(
-    //     mut self,
-    //     client_cert_chain: Vec<Vec<u8>>,
-    //     client_private_key: Vec<u8>,
-    //     ca_certs: Option<Vec<Vec<u8>>>,
-    //     skip_server_verification: bool,
-    //     server_name: Option<String>,
-    //     client_cert_path: Option<String>,
-    //     client_key_path: Option<String>,
-    //     ca_cert_path: Option<String>,
-    // ) -> RatResult<Self> {
-    //     if client_cert_chain.is_empty() {
-    //         return Err(RatError::RequestError("客户端证书链不能为空".to_string()));
-    //     }
-    //
-    //     self.mtls_config = Some(MtlsClientConfig {
-    //         client_cert_chain,
-    //         client_private_key,
-    //         ca_certs,
-    //         skip_server_verification,
-    //         server_name,
-    //         client_cert_path,
-    //         client_key_path,
-    //         ca_cert_path,
-    //     });
-    //
-    //     Ok(self)
-    // }
-    //
-    // /// 使用自签名证书配置 mTLS（开发模式）
-    // ///
-    // /// 便捷方法，自动跳过服务器证书验证，适用于开发环境
-    // ///
-    // /// # 参数
-    // /// - `client_cert_chain`: 客户端证书链
-    // /// - `client_private_key`: 客户端私钥
-    // /// - `server_name`: 可选的服务器名称
-    // /// - `client_cert_path`: 客户端证书文件路径（用于调试日志）
-    // /// - `client_key_path`: 客户端私钥文件路径（用于调试日志）
-    // ///
-    // /// # 返回值
-    // /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
-    // pub fn with_self_signed_mtls(
-    //     mut self,
-    //     client_cert_chain: Vec<Vec<u8>>,
-    //     client_private_key: Vec<u8>,
-    //     server_name: Option<String>,
-    //     client_cert_path: Option<String>,
-    //     client_key_path: Option<String>,
-    // ) -> RatResult<Self> {
-    //     self.with_mtls(client_cert_chain, client_private_key, None, true, server_name, client_cert_path, client_key_path, None)
-    // }
-    //
+
+    /// 配置 mTLS 客户端认证（从文件路径加载）
+    ///
+    /// 启用双向 TLS 认证，客户端将提供证书给服务器验证
+    ///
+    /// # 参数
+    /// - `client_cert_path`: 客户端证书文件路径（PEM 格式）
+    /// - `client_key_path`: 客户端私钥文件路径（PEM 格式）
+    ///
+    /// # 返回值
+    /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
+    pub fn with_client_certs<S: Into<String>>(
+        mut self,
+        client_cert_path: S,
+        client_key_path: S,
+    ) -> RatResult<Self> {
+        self.with_client_certs_and_ca(client_cert_path, client_key_path, None::<String>)
+    }
+
+    /// 配置 mTLS 客户端认证（包含自定义 CA 证书）
+    ///
+    /// 启用双向 TLS 认证，客户端将提供证书给服务器验证，
+    /// 同时使用指定的 CA 证书验证服务器证书
+    ///
+    /// # 参数
+    /// - `client_cert_path`: 客户端证书文件路径（PEM 格式）
+    /// - `client_key_path`: 客户端私钥文件路径（PEM 格式）
+    /// - `ca_cert_path`: CA 证书文件路径（用于验证服务器证书，可选）
+    ///
+    /// # 返回值
+    /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
+    pub fn with_client_certs_and_ca<S1, S2>(
+        mut self,
+        client_cert_path: S1,
+        client_key_path: S2,
+        ca_cert_path: Option<String>,
+    ) -> RatResult<Self>
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+    {
+        let cert_path = client_cert_path.into();
+        let key_path = client_key_path.into();
+
+        // 读取客户端证书
+        let cert_pem = std::fs::read_to_string(&cert_path)
+            .map_err(|e| RatError::RequestError(format!("读取客户端证书失败: {}", e)))?;
+        let cert_chain = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| RatError::RequestError(format!("解析客户端证书失败: {}", e)))?;
+
+        if cert_chain.is_empty() {
+            return Err(RatError::RequestError("客户端证书链为空".to_string()));
+        }
+
+        // 读取客户端私钥
+        let key_pem = std::fs::read_to_string(&key_path)
+            .map_err(|e| RatError::RequestError(format!("读取客户端私钥失败: {}", e)))?;
+        let private_key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
+            .map_err(|e| RatError::RequestError(format!("解析客户端私钥失败: {}", e)))?
+            .ok_or_else(|| RatError::RequestError("客户端私钥为空".to_string()))?;
+
+        // 将私钥编码为 PEM 格式字节
+        let private_key_pem = key_pem.into_bytes();
+
+        // 读取 CA 证书（如果提供且非空）
+        let (ca_certs, ca_cert_path_opt) = if let Some(ca_path_str) = ca_cert_path.as_ref() {
+            if !ca_path_str.is_empty() {
+                let ca_pem = std::fs::read_to_string(ca_path_str)
+                    .map_err(|e| RatError::RequestError(format!("读取 CA 证书失败: {}", e)))?;
+                let ca_certs_der = rustls_pemfile::certs(&mut ca_pem.as_bytes())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| RatError::RequestError(format!("解析 CA 证书失败: {}", e)))?;
+                (Some(ca_certs_der.iter().map(|c| c.to_vec()).collect()), Some(ca_path_str.clone()))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        self.mtls_config = Some(MtlsClientConfig {
+            client_cert_chain: cert_chain.iter().map(|c| c.to_vec()).collect(),
+            client_private_key: private_key_pem,
+            ca_certs,
+            server_name: None,
+            client_cert_path: Some(cert_path),
+            client_key_path: Some(key_path),
+            ca_cert_path: ca_cert_path_opt,
+        });
+
+        Ok(self)
+    }
+
+    /// 配置 mTLS 客户端认证（完整版本，支持自定义 CA）
+    ///
+    /// 启用双向 TLS 认证，客户端将提供证书给服务器验证
+    ///
+    /// # 参数
+    /// - `client_cert_chain`: 客户端证书链（DER 格式）
+    /// - `client_private_key`: 客户端私钥（DER 格式）
+    /// - `ca_certs`: 可选的 CA 证书（用于验证服务器证书）
+    /// - `server_name`: 可选的服务器名称，用于 SNI
+    ///
+    /// # 返回值
+    /// - RatResult<Self>: 成功返回构建器实例，失败返回错误
+    pub fn with_mtls(
+        mut self,
+        client_cert_chain: Vec<Vec<u8>>,
+        client_private_key: Vec<u8>,
+        ca_certs: Option<Vec<Vec<u8>>>,
+        server_name: Option<String>,
+    ) -> RatResult<Self> {
+        if client_cert_chain.is_empty() {
+            return Err(RatError::RequestError("客户端证书链不能为空".to_string()));
+        }
+
+        self.mtls_config = Some(MtlsClientConfig {
+            client_cert_chain,
+            client_private_key,
+            ca_certs,
+            server_name,
+            client_cert_path: None,
+            client_key_path: None,
+            ca_cert_path: None,
+        });
+
+        Ok(self)
+    }
+
     // =============================================================================
+
 
     /// 配置 DNS 预解析映射
     ///
@@ -435,6 +480,7 @@ impl RatGrpcClientBuilder {
             3,
             compression_mode,
             h2c_mode,
+            self.mtls_config,
             self.dns_mapping,
             false,  // h2c_over_tls = false（标准模式）
         ))
@@ -529,6 +575,7 @@ impl RatGrpcClientBuilder {
             3,
             compression_mode,
             h2c_mode,
+            self.mtls_config,
             self.dns_mapping,
             true,  // h2c_over_tls = true
         ))

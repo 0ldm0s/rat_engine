@@ -1,26 +1,36 @@
 //! gRPC 客户端安全模块（rustls）
 //!
-//! 专注于 TLS/SSL 配置，使用 rustls-platform-verifier 加载系统证书
+//! 专注于 TLS/SSL 和 mTLS 配置，使用 rustls + ring
 
 use std::sync::Arc;
 
 use rustls::{
     ClientConfig,
     crypto::ring::default_provider,
-    pki_types::{ServerName, CertificateDer},
+    pki_types::{ServerName, CertificateDer, PrivateKeyDer},
 };
 
 use crate::error::{RatError, RatResult};
 use crate::utils::logger::{info, warn};
 use crate::client::grpc_client::RatGrpcClient;
+use crate::client::grpc_builder::MtlsClientConfig;
 
 // 导入 BuilderVerifierExt trait 以使用 with_platform_verifier()
 use rustls_platform_verifier::BuilderVerifierExt;
 
 impl RatGrpcClient {
     pub fn create_tls_config(&self) -> RatResult<Arc<ClientConfig>> {
+        println!("🔧 [TLS] 开始创建 TLS 配置，h2c_mode={}, h2c_over_tls={}, has_mtls={}",
+            self.h2c_mode, self.h2c_over_tls, self.mtls_config.is_some());
+
         // 确保 CryptoProvider 已安装
         crate::utils::crypto_provider::ensure_crypto_provider_installed();
+
+        // 如果配置了 mTLS，使用 mTLS 配置
+        if let Some(ref mtls_config) = self.mtls_config {
+            println!("🔐 [TLS] 检测到 mTLS 配置，调用 mTLS 配置");
+            return self.create_mtls_config(mtls_config);
+        }
 
         if self.h2c_mode {
             warn!("⚠️  警告：gRPC 客户端已启用 h2c-over-TLS 模式，将跳过所有 TLS 证书验证！仅用于通过 HTTP 代理传输！");
@@ -29,6 +39,67 @@ impl RatGrpcClient {
             info!("✅ 使用标准 TLS 配置（系统证书）");
             return self.create_standard_config();
         }
+    }
+
+    fn create_mtls_config(&self, mtls_config: &MtlsClientConfig) -> RatResult<Arc<ClientConfig>> {
+        println!("🔑 [mTLS] 开始创建 mTLS 配置");
+
+        let provider = Arc::new(default_provider());
+        let config_builder = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?;
+        println!("✅ [mTLS] CryptoProvider 和协议版本配置完成");
+
+        // 根据是否配置了自定义 CA 来选择证书验证器
+        let config_builder = if let Some(ref ca_certs) = mtls_config.ca_certs {
+            println!("📋 [mTLS] 使用自定义 CA 证书，数量: {}", ca_certs.len());
+            // 使用自定义 CA 验证服务器证书
+            let mut root_store = rustls::RootCertStore::empty();
+            for (i, ca_cert) in ca_certs.iter().enumerate() {
+                let cert = CertificateDer::from(ca_cert.to_vec());
+                println!("   [{}] 添加 CA 证书，大小: {} 字节", i, ca_cert.len());
+                root_store.add(cert)
+                    .map_err(|e| RatError::RequestError(format!("添加 CA 证书失败: {}", e)))?;
+            }
+
+            warn!("⚠️  使用自定义 CA 证书验证服务器");
+            config_builder.with_root_certificates(root_store)
+        } else {
+            println!("🌐 [mTLS] 使用系统平台验证器（rustls-platform-verifier）");
+            // 使用系统平台验证器
+            config_builder.with_platform_verifier()
+        };
+
+        // 配置客户端证书
+        println!("📜 [mTLS] 配置客户端证书链，数量: {}", mtls_config.client_cert_chain.len());
+        let cert_chain: Vec<CertificateDer<'static>> = mtls_config.client_cert_chain
+            .iter()
+            .map(|c| CertificateDer::from(c.to_vec()))
+            .collect();
+        println!("   证书链 DER 编码完成");
+
+        // 从 PEM 格式解析私钥
+        println!("🔐 [mTLS] 解析客户端私钥，PEM 大小: {} 字节", mtls_config.client_private_key.len());
+        let private_key = rustls_pemfile::private_key(&mut mtls_config.client_private_key.as_slice())
+            .map_err(|e| RatError::RequestError(format!("解析客户端私钥失败: {}", e)))?
+            .ok_or_else(|| RatError::RequestError("客户端私钥为空".to_string()))?;
+        println!("   私钥解析成功");
+
+        println!("📋 [mTLS] 调用 with_client_auth_cert");
+        let mut config = config_builder
+            .with_client_auth_cert(cert_chain, private_key)
+            .map_err(|e| RatError::RequestError(format!("配置客户端证书失败: {}", e)))?;
+        println!("✅ [mTLS] 客户端证书配置成功");
+
+        // 设置 ALPN 协议
+        if self.h2c_over_tls {
+            println!("📡 [mTLS] h2c-over-TLS 模式：不设置 ALPN");
+        } else {
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            println!("📡 [mTLS] 标准 ALPN: h2");
+        }
+
+        println!("✅ [mTLS] 配置完成");
+        Ok(Arc::new(config))
     }
 
     fn create_development_config(&self) -> RatResult<Arc<ClientConfig>> {

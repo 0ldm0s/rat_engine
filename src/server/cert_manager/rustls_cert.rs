@@ -89,7 +89,7 @@ impl RustlsCertManager {
         // 根据是否配置了 CA 证书决定是否启用 mTLS
         let server_config = if let Some(ca_path) = &cert_config.ca_path {
             // 启用 mTLS（双向认证）
-            info!("启用 mTLS，CA 证书: {}", ca_path.display());
+            println!("🔐 [服务器] 启用 mTLS，CA 证书: {}", ca_path.display());
 
             // 加载 CA 证书
             let ca_file = File::open(ca_path)
