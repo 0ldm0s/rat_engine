@@ -22,8 +22,8 @@ impl RatGrpcClient {
         // 确保 CryptoProvider 已安装
         crate::utils::crypto_provider::ensure_crypto_provider_installed();
 
-        if self.development_mode {
-            warn!("⚠️  警告：gRPC 客户端已启用开发模式，将跳过所有 TLS 证书验证！仅用于开发环境！");
+        if self.h2c_mode {
+            warn!("⚠️  警告：gRPC 客户端已启用 h2c-over-TLS 模式，将跳过所有 TLS 证书验证！仅用于通过 HTTP 代理传输！");
             return self.create_development_config();
         } else {
             info!("✅ 使用标准 TLS 配置（系统证书）");
@@ -32,7 +32,7 @@ impl RatGrpcClient {
     }
 
     fn create_development_config(&self) -> RatResult<Arc<ClientConfig>> {
-        // 开发模式：跳过证书验证
+        // h2c-over-TLS 模式：跳过证书验证
         let mut config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerification))

@@ -544,7 +544,7 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 启动服务器
     let engine = RatEngine::builder()
         .router(router)
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await
+        .enable_h2c_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await
         .map_err(|e| format!("启用开发模式失败: {}", e))?
         .build()?;
     
@@ -567,7 +567,7 @@ async fn run_client_download(file_id: &str) -> Result<(), Box<dyn std::error::Er
         .http_mixed()
         .user_agent("ResumableDownloadClient/1.0")?
         .disable_compression()
-        .development_mode()
+        .h2c_mode()
         .build()?;
 
     // 创建元数据管理器
@@ -600,7 +600,7 @@ async fn run_client_resume(file_id: &str) -> Result<(), Box<dyn std::error::Erro
         .http_mixed()
         .user_agent("ResumableDownloadClient/1.0")?
         .disable_compression()
-        .development_mode()
+        .h2c_mode()
         .build()?;
 
     // 创建元数据管理器

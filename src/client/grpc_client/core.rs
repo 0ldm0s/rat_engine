@@ -66,7 +66,7 @@ pub struct RatGrpcClient {
     /// 委托模式双向流管理器
     pub delegated_manager: Arc<ClientBidirectionalManager>,
     /// 是否启用开发模式（跳过证书验证）
-    pub development_mode: bool,
+    pub h2c_mode: bool,
     // /// mTLS 客户端配置 (暂时注释，专注 TLS/SSL)
     // pub mtls_config: Option<crate::client::grpc_builder::MtlsClientConfig>,
     /// DNS解析映射表（域名 -> 预解析IP）
@@ -92,7 +92,7 @@ impl Clone for RatGrpcClient {
             request_id_counter: std::sync::atomic::AtomicU64::new(0),
             stream_id_counter: std::sync::atomic::AtomicU64::new(0),
             delegated_manager: self.delegated_manager.clone(),
-            development_mode: self.development_mode,
+            h2c_mode: self.h2c_mode,
             // mtls_config: self.mtls_config.as_ref().map(|config| {
             //     crate::client::grpc_builder::MtlsClientConfig {
             //         client_cert_chain: config.client_cert_chain.clone(),

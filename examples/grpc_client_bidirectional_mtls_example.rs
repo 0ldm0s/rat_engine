@@ -22,9 +22,9 @@ use tokio_stream;
 use rat_engine::client::grpc_client::RatGrpcClient;
 use rat_engine::client::grpc_builder::RatGrpcClientBuilder;
 use rat_engine::client::grpc_client_delegated::{ClientBidirectionalHandler, ClientStreamContext};
-use rat_engine::server::cert_manager::{CertificateManager, CertManagerConfig};
+use rat_engine::server::cert_manager::{CertificateManager, CertConfig, CertManagerConfig};
 use rat_engine::utils::logger::{info, warn, debug, error};
-use rat_engine::{RatEngine, ServerConfig, Router};
+use rat_engine::{RatEngine, Router};
 use std::future::Future;
 use std::fs;
 
@@ -320,107 +320,96 @@ async fn start_mtls_test_server() -> Result<(), Box<dyn std::error::Error + Send
         }
     }
     
-    // 创建 mTLS 证书管理器配置（自签名模式）
-    let cert_manager_config = CertManagerConfig {
-        development_mode: true,
-        cert_path: Some("./certs/server.crt".to_string()),
-        key_path: Some("./certs/server.key".to_string()),
-        ca_path: Some("./certs/ca.crt".to_string()),
-        validity_days: 365,
-        hostnames: vec!["localhost".to_string(), "127.0.0.1".to_string()],
-        acme_enabled: false,
-        acme_production: false,
-        acme_email: None,
-        cloudflare_api_token: None,
-        acme_renewal_days: 30,
-        acme_cert_dir: None,
-        mtls_enabled: true,
-        client_cert_path: Some("./certs/client.crt".to_string()),
-        client_key_path: Some("./certs/client.key".to_string()),
-        client_ca_path: Some("./certs/ca.crt".to_string()),
-        mtls_mode: Some("self_signed".to_string()),
-        auto_generate_client_cert: true,
-        client_cert_subject: Some("CN=RAT Engine Client,O=RAT Engine,C=CN".to_string()),
-        auto_refresh_enabled: true,
-        refresh_check_interval: 3600,
-        force_cert_rotation: false,
-        mtls_whitelist_paths: Vec::new(),
-    };
-    
-    // 创建并初始化证书管理器
-    let mut cert_manager = CertificateManager::new(cert_manager_config.clone());
-    cert_manager.initialize().await.map_err(|e| format!("证书管理器初始化失败: {}", e))?;
-    let cert_manager = Arc::new(RwLock::new(cert_manager));
-    
-    // 创建服务器配置
-    let config = ServerConfig::new(
-        "127.0.0.1:50053".parse().unwrap(),
-        4
-    );
-    
-    // 创建路由器
-    let mut router = Router::new();
-    router.enable_h2(); // 启用 HTTP/2 支持，mTLS 需要 HTTP/2
-    router.enable_h2c(); // 启用 H2C 以支持明文 HTTP/2
-    router.add_grpc_bidirectional("/chat.ChatService/BidirectionalChat", MtlsChatHandler);
-    
-    info!("🚀 [mTLS服务器] 启动 mTLS gRPC 服务器，监听地址: 127.0.0.1:50053");
-    
-    // 启动服务器 - 使用新的 RatEngineBuilder 架构，配置日志和证书管理器
-    let mut log_config = rat_engine::utils::logger::LogConfig::default();
-    log_config.level = rat_engine::utils::logger::LogLevel::Debug; // 设置debug级别日志
+    // 创建 mTLS 证书管理器配置
+    // 使用实际签发的服务器证书 + CA 验证客户端
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let mut cert_manager_for_engine = CertificateManager::new(cert_manager_config.clone());
-    cert_manager_for_engine.initialize().await.map_err(|e| format!("证书管理器初始化失败: {}", e))?;
+    let server_cert_config = CertConfig::from_paths(
+        manifest_dir.join("examples/certs/ligproxy-test.0ldm0s.net.pem"),
+        manifest_dir.join("examples/certs/ligproxy-test.0ldm0s.net-key.pem"),
+    )
+    .with_domains(vec!["ligproxy-test.0ldm0s.net".to_string()])
+    .with_ca(manifest_dir.join("examples/certs/mtls/ca-cert.pem")); // ← 启用 mTLS
+
+    let cert_manager_config = CertManagerConfig::shared(server_cert_config);
+
+    // 创建证书管理器
+    let cert_manager = CertificateManager::from_config(cert_manager_config)?;
+    
+    // 创建路由器（启用纯 gRPC 模式）
+    let mut router = Router::new();
+    router.enable_grpc_only(); // 纯 gRPC 模式
+    router.enable_h2(); // 启用 HTTP/2
+    router.add_grpc_bidirectional("/chat.ChatService/BidirectionalChat", MtlsChatHandler);
+
+    info!("🚀 [mTLS服务器] 启动 mTLS gRPC 服务器（纯 gRPC 模式）");
+    info!("   监听地址: 127.0.0.1:50053");
+    info!("   mTLS: 已启用");
 
     let engine = RatEngine::builder()
-        .with_log_config(log_config)
         .router(router)
-        .certificate_manager(cert_manager_for_engine)
+        .certificate_manager(cert_manager)
+        .worker_threads(4)
         .build()?;
-    
-    // ALPN 协议现在由 RatEngineBuilder 自动配置，无需手动设置
-    
-    engine.start("127.0.0.1".to_string(), 50053).await?;
-    
+
+    engine.start_single_port_multi_protocol("127.0.0.1".to_string(), 50053).await?;
+
     Ok(())
 }
 
 /// 运行 mTLS 委托模式测试
 async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
-    info!("🚀 启动 mTLS 委托模式双向流测试...");
-    
-    // 加载客户端证书和私钥
-    let client_cert_chain = load_certificates("certs/client.crt")?;
-    let client_private_key = load_private_key("certs/client.key")?;
-    
-    // 创建 mTLS 客户端
+    info!("🚀 启动 mTLS 客户端测试...");
+
+    // 获取项目根目录
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cert_dir = manifest_dir.join("examples/certs/mtls");
+
+    info!("📁 证书目录: {:?}", cert_dir);
+
+    // 检查证书文件是否存在
+    let client_cert_path = cert_dir.join("client-cert-chain.pem");  // 完整证书链（包含 CA）
+    let client_key_path = cert_dir.join("client-key.pem");
+    let ca_cert_path = cert_dir.join("ca-cert.pem");
+
+    info!("   客户端证书: {:?}", client_cert_path);
+    info!("   客户端私钥: {:?}", client_key_path);
+    info!("   CA 证书: {:?}", ca_cert_path);
+
+    if !client_cert_path.exists() {
+        return Err(format!("客户端证书文件不存在: {:?}", client_cert_path).into());
+    }
+    if !client_key_path.exists() {
+        return Err(format!("客户端私钥文件不存在: {:?}", client_key_path).into());
+    }
+    if !ca_cert_path.exists() {
+        return Err(format!("CA 证书文件不存在: {:?}", ca_cert_path).into());
+    }
+
+    // 使用 mTLS 客户端证书进行双向认证
     let mut client = RatGrpcClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))?
         .request_timeout(Duration::from_secs(30))?
-        .max_idle_connections(10)?
-        .http2_only() // 强制使用 HTTP/2
-        .user_agent("rat-engine-mtls-example/1.0")?
+        .max_idle_connections(5)?
+        .http2_only()
         .disable_compression()
-        // 配置 mTLS 客户端证书（开发模式）
-        .with_self_signed_mtls(
-            client_cert_chain,
-            client_private_key,
-            Some("localhost".to_string()),
-            Some("./certs/client.crt".to_string()),
-            Some("./certs/client.key".to_string())
+        .user_agent("rat-engine-mtls-example/1.0")?
+        // 配置 mTLS 客户端证书（不提供 CA 证书，使用系统证书验证服务器）
+        .with_client_certs(
+            client_cert_path.to_string_lossy().to_string(),
+            client_key_path.to_string_lossy().to_string()
         )?
-        .development_mode() // 启用开发模式
         .build()?;
     
     // 创建 mTLS 委托处理器
     let handler = Arc::new(MtlsDelegatedHandler::new("mTLS客户端001".to_string()));
     
     // 创建委托模式双向流
+    // 使用域名连接（hosts 已配置 ligproxy-test.0ldm0s.net -> 127.0.0.1）
     let stream_id = client.create_bidirectional_stream_delegated_with_uri(
-        "https://127.0.0.1:50053",
+        "https://ligproxy-test.0ldm0s.net:50053",
         "chat.ChatService",
-        "BidirectionalChat", 
+        "BidirectionalChat",
         handler.clone(),
         None::<HashMap<String, String>>
     ).await?;
@@ -492,11 +481,20 @@ async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rat_engine::require_features!("client", "tls");
 
+    // 初始化日志系统
+    rat_engine::utils::logger::Logger::init(rat_engine::utils::logger::LogConfig {
+        enabled: true,
+        level: rat_engine::utils::logger::LogLevel::Info,
+        output: rat_engine::utils::logger::LogOutput::Terminal,
+        use_colors: true,
+        use_emoji: true,
+        show_timestamp: true,
+        show_module: true,
+    })?;
+
     // 确保 CryptoProvider 只安装一次
     rat_engine::utils::crypto_provider::ensure_crypto_provider_installed();
-    
-    // 日志通过RatEngineBuilder初始化
-    
+
     info!("🚀 启动 gRPC 客户端双向流 mTLS 示例");
     
     // 检查命令行参数（现在只支持委托模式）

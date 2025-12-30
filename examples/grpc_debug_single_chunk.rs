@@ -259,7 +259,7 @@ pub async fn start_debug_server() -> Result<(), Box<dyn std::error::Error + Send
         .worker_threads(4)
         .max_connections(10000)
         .router(router)
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await?
+        .enable_h2c_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await?
         .build()?;
     
     engine.start(addr.ip().to_string(), addr.port()).await?;
@@ -283,7 +283,7 @@ async fn run_debug_client_test() -> Result<(), Box<dyn std::error::Error + Send 
         .http_mixed()
         .user_agent("RAT-Engine-gRPC-Client/1.0")?
         .disable_compression()
-        .development_mode()
+        .h2c_mode()
         .build()?;
 
     // 创建下载请求

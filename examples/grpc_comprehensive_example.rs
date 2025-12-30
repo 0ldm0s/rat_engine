@@ -1207,7 +1207,7 @@ pub async fn start_real_grpc_file_server() -> Result<(), Box<dyn std::error::Err
     println!("DEBUG: 使用 RatEngineBuilder 启动服务器");
     let engine = rat_engine::RatEngine::builder()
         .with_log_config(rat_engine::utils::logger::LogConfig::default())
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await?
+        .enable_h2c_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await?
         .router(router)
         .build()?;
     engine.start("127.0.0.1".to_string(), 50051).await?;
@@ -1301,10 +1301,10 @@ async fn run_real_grpc_client_tests(tests_to_run: Vec<TestType>) -> Result<TestR
         })
         .and_then(|b| {
             println!("DEBUG: disable_compression 设置成功");
-            Ok(b.development_mode())
+            Ok(b.h2c_mode())
         })
         .and_then(|b| {
-            println!("DEBUG: development_mode 设置成功，开始构建客户端实例");
+            println!("DEBUG: h2c_mode 设置成功，开始构建客户端实例");
             b.build()
         }) {
         Ok(client) => {

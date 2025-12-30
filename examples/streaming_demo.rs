@@ -343,7 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = RatEngine::builder()
         .with_log_config(rat_engine::utils::logger::LogConfig::default())
         .router(router)
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await
+        .enable_h2c_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()]).await
         .map_err(|e| format!("启用开发模式失败: {}", e))?
         .build()
         .map_err(|e| format!("构建引擎失败: {}", e))?;

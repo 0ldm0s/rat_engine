@@ -96,7 +96,7 @@ pub struct ConnectionPoolConfig {
     /// 每个目标的最大连接数
     pub max_connections_per_target: usize,
     /// 开发模式（跳过 TLS 证书验证）
-    pub development_mode: bool,
+    pub h2c_mode: bool,
     /// mTLS 客户端配置 (暂时注释，专注 TLS/SSL)
     pub mtls_config: Option<()>,  // 占位符，mTLS 功能暂时注释
     /// TLS 配置（rustls）
@@ -112,7 +112,7 @@ impl Default for ConnectionPoolConfig {
             connect_timeout: Duration::from_secs(10),
             cleanup_interval: Duration::from_secs(60),
             max_connections_per_target: 10,
-            development_mode: false,
+            h2c_mode: false,
             mtls_config: None,  // mTLS 功能暂时注释
             tls_config: None,
         }
@@ -293,7 +293,7 @@ impl ClientConnectionPool {
         let connection_handle;
 
         if is_https {
-            debug!("[客户端] 🔐 建立 TLS 连接到 {}:{} (开发模式: {})", host, port, self.config.development_mode);
+            debug!("[客户端] 🔐 建立 TLS 连接到 {}:{} (开发模式: {})", host, port, self.config.h2c_mode);
 
             // 获取 TLS 配置
             let tls_config = self.config.tls_config.as_ref()

@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .http2_only()
         .user_agent("rat-engine-grpc-tls-client/1.0")?
         .disable_compression()
-        .development_mode()  // 跳过证书验证（测试自签名证书）
+        .h2c_mode()  // 跳过证书验证（测试自签名证书）
         .build()?;
 
     println!("✅ 客户端创建成功");

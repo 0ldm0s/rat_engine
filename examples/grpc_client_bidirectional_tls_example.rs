@@ -247,7 +247,7 @@ async fn start_tls_test_server() -> Result<(), Box<dyn std::error::Error + Send 
     let engine = RatEngine::builder()
         .router(router)
         .with_log_config(log_config)
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()])
+        .enable_h2c_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()])
         .await
         .map_err(|e| format!("配置开发模式失败: {}", e))?
         .build()
@@ -262,7 +262,7 @@ async fn start_tls_test_server() -> Result<(), Box<dyn std::error::Error + Send 
 async fn run_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 启动 TLS 委托模式双向流测试...");
     
-    // 创建客户端 - 使用 HTTPS 和开发模式（跳过证书验证）
+    // 创建客户端 - 使用 HTTPS（服务器使用 ACME 证书，系统信任）
     let mut client = RatGrpcClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))?
         .request_timeout(Duration::from_secs(30))?
@@ -270,7 +270,6 @@ async fn run_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
         .http2_only() // 强制使用 HTTP/2
         .user_agent("rat-engine-tls-example/1.0")?
         .disable_compression()
-        .development_mode() // 启用开发模式，跳过证书验证
         .build()?;
     
     // 创建简单的委托处理器（不包含业务逻辑）

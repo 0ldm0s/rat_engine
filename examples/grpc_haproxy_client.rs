@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .http2_only()
         .user_agent("rat-engine-grpc-standard/1.0")?
         .disable_compression()
-        .development_mode()
+        .h2c_mode()
         .build()?;
 
     println!("✅ h2c-over-TLS 客户端创建成功");

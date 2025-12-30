@@ -34,9 +34,13 @@ where
     };
 
     // 使用 tokio-rustls 进行 TLS 握手
+    println!("🔍 [DEBUG] [gRPC] 开始 TLS 握手，remote_addr={}", remote_addr);
+
     let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
     let tls_stream = acceptor.accept(stream).await
         .map_err(|e| {
+            println!("❌ [DEBUG] [gRPC] TLS 握手失败，错误类型: {:?}", std::error::Error::source(&e));
+            println!("❌ [DEBUG] [gRPC] 完整错误: {:?}", e);
             error!("❌ [gRPC] TLS 握手失败: {}", e);
             format!("TLS 握手失败: {}", e)
         })?;

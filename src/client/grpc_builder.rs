@@ -84,9 +84,9 @@ pub struct RatGrpcClientBuilder {
     user_agent: Option<String>,
     /// 压缩模式
     compression_mode: Option<GrpcCompressionMode>,
-    /// 是否为开发模式（跳过证书验证）
-    /// 警告：仅用于开发环境，生产环境必须设置为 false
-    development_mode: Option<bool>,
+    /// 是否启用 h2c-over-TLS 模式
+    /// 警告：此模式会跳过 TLS 证书验证，仅用于通过 HTTP 代理传输 h2c 流
+    h2c_mode: Option<bool>,
     // /// mTLS 配置 (暂时注释)
     // mtls_config: Option<MtlsClientConfig>,
     /// DNS解析映射表（域名 -> 预解析IP）
@@ -105,7 +105,7 @@ impl RatGrpcClientBuilder {
             http2_only: None,
             user_agent: None,
             compression_mode: None,
-            development_mode: None,
+            h2c_mode: None,
             // mtls_config: None,
             dns_mapping: None,
         }
@@ -213,27 +213,26 @@ impl RatGrpcClientBuilder {
         self
     }
 
-    /// 启用开发模式（跳过证书验证）
+    /// 启用 h2c-over-TLS 模式（跳过证书验证）
     ///
-    /// **警告：此模式会跳过所有 TLS 证书验证，仅用于开发和测试环境！**
-    /// **生产环境绝对不能使用此模式！**
+    /// **警告：此模式会跳过所有 TLS 证书验证，仅用于通过 HTTP 代理传输 h2c 流！**
     ///
-    /// 开发模式下将：
+    /// h2c-over-TLS 模式下将：
     /// - 跳过 TLS 证书验证
     /// - 接受自签名证书
     /// - 接受过期证书
     /// - 接受主机名不匹配的证书
-    pub fn development_mode(mut self) -> Self {
-        self.development_mode = Some(true);
+    pub fn h2c_mode(mut self) -> Self {
+        self.h2c_mode = Some(true);
         self
     }
 
-    /// 设置开发模式状态
+    /// 设置 h2c-over-TLS 模式状态
     ///
     /// # 参数
-    /// * `enabled` - 是否启用开发模式
-    pub fn with_development_mode(mut self, enabled: bool) -> RatResult<Self> {
-        self.development_mode = Some(enabled);
+    /// * `enabled` - 是否启用 h2c-over-TLS 模式
+    pub fn with_h2c_mode(mut self, enabled: bool) -> RatResult<Self> {
+        self.h2c_mode = Some(enabled);
         Ok(self)
     }
 
@@ -384,7 +383,7 @@ impl RatGrpcClientBuilder {
         let compression_mode = self.compression_mode
             .ok_or_else(|| RatError::RequestError("压缩模式未设置".to_string()))?;
 
-        let development_mode = self.development_mode.unwrap_or(false);  // 默认不启用开发模式
+        let h2c_mode = self.h2c_mode.unwrap_or(false);  // 默认不启用 h2c 模式
 
         // 创建连接器
         let mut connector = HttpConnector::new();
@@ -435,7 +434,7 @@ impl RatGrpcClientBuilder {
             false,
             3,
             compression_mode,
-            development_mode,
+            h2c_mode,
             self.dns_mapping,
             false,  // h2c_over_tls = false（标准模式）
         ))
@@ -478,7 +477,7 @@ impl RatGrpcClientBuilder {
         let compression_mode = self.compression_mode
             .ok_or_else(|| RatError::RequestError("压缩模式未设置".to_string()))?;
 
-        let development_mode = self.development_mode.unwrap_or(false);  // 默认不启用开发模式
+        let h2c_mode = self.h2c_mode.unwrap_or(false);  // 默认不启用 h2c 模式
 
         // 创建连接器
         let mut connector = HttpConnector::new();
@@ -529,7 +528,7 @@ impl RatGrpcClientBuilder {
             false,
             3,
             compression_mode,
-            development_mode,
+            h2c_mode,
             self.dns_mapping,
             true,  // h2c_over_tls = true
         ))

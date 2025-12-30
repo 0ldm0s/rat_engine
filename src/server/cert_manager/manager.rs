@@ -149,20 +149,60 @@ impl CertificateManager {
     }
 }
 
-// ============ 以下是保留的兼容性接口（可能需要废弃）============
+// ============ mTLS 相关接口 ============
 
-/// mTLS 白名单检查（保留兼容性）
+/// mTLS 检查
 impl CertificateManager {
-    /// 检查路径是否在 mTLS 白名单中
+    /// 检查路径是否在 mTLS 白名单中（暂不使用）
     pub fn is_mtls_whitelisted(&self, _path: &str) -> bool {
-        // 新实现暂不支持 mTLS 白名单
-        false
+        // mTLS 模式下全部要求客户端证书
+        self.is_mtls_enabled()
     }
 
     /// 检查是否启用了 mTLS
     pub fn is_mtls_enabled(&self) -> bool {
-        // 新实现暂不支持 mTLS
-        false
+        // 检查是否有证书配置启用了 CA（即启用了 mTLS）
+        if self.config.separated_mode {
+            // 分端口模式：检查 gRPC 和 HTTP 证书是否配置了 CA
+            let grpc_has_ca = self.config.grpc_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some();
+            let http_has_ca = self.config.http_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some();
+            grpc_has_ca || http_has_ca
+        } else {
+            // 同端口模式：检查共用证书是否配置了 CA
+            self.config.shared_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some()
+        }
+    }
+
+    /// 检查 gRPC 是否启用了 mTLS
+    pub fn is_grpc_mtls_enabled(&self) -> bool {
+        if self.config.separated_mode {
+            self.config.grpc_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some()
+        } else {
+            self.config.shared_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some()
+        }
+    }
+
+    /// 检查 HTTP 是否启用了 mTLS
+    pub fn is_http_mtls_enabled(&self) -> bool {
+        if self.config.separated_mode {
+            self.config.http_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some()
+        } else {
+            self.config.shared_cert.as_ref()
+                .and_then(|c| c.ca_path.as_ref())
+                .is_some()
+        }
     }
 }
 

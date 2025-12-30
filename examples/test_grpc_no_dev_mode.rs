@@ -3,7 +3,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("测试不设置 development_mode 的情况");
+    println!("测试不设置 h2c_mode 的情况");
 
     let result = RatGrpcClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))?
@@ -12,10 +12,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .http_mixed()  // 使用混合模式
         .user_agent("Test Client")?
         .disable_compression()
-        .build();  // 不设置 development_mode
+        .build();  // 不设置 h2c_mode
 
     match result {
-        Ok(_) => println!("✅ 客户端创建成功（未设置 development_mode）"),
+        Ok(_) => println!("✅ 客户端创建成功（未设置 h2c_mode）"),
         Err(e) => println!("❌ 错误: {}", e),
     }
 

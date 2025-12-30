@@ -126,7 +126,7 @@ async fn start_test_server() -> Result<(), Box<dyn std::error::Error + Send + Sy
     let engine = RatEngine::builder()
         .router(router)
         .with_log_config(log_config)
-        .enable_development_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()])
+        .enable_h2c_mode(vec!["127.0.0.1".to_string(), "localhost".to_string()])
         .await
         .map_err(|e| format!("配置开发模式失败: {}", e))?
         .build()
@@ -163,7 +163,7 @@ async fn run_unary_test() -> Result<(), Box<dyn std::error::Error>> {
         .http2_only()
         .user_agent("rat-engine-dns-test/1.0")?
         .disable_compression()
-        .development_mode()
+        .h2c_mode()
         .with_dns_mapping(dns_mapping)?
         .build()?;
 

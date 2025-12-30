@@ -9,10 +9,11 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::server::{ServerConfig, ResolvesServerCertUsingSni};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::{ServerConfig, ResolvesServerCertUsingSni, WebPkiClientVerifier};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
 use rustls_pemfile::{certs, private_key};
+use rustls::RootCertStore;
 
 use crate::utils::logger::{info, error};
 
@@ -84,12 +85,58 @@ impl RustlsCertManager {
 
         // 创建 ServerConfig，ALPN 只支持 h2
         let sni_resolver_arc = Arc::new(sni_resolver);
-        let mut server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_cert_resolver(sni_resolver_arc.clone());
+
+        // 根据是否配置了 CA 证书决定是否启用 mTLS
+        let server_config = if let Some(ca_path) = &cert_config.ca_path {
+            // 启用 mTLS（双向认证）
+            info!("启用 mTLS，CA 证书: {}", ca_path.display());
+
+            // 加载 CA 证书
+            let ca_file = File::open(ca_path)
+                .map_err(|e| format!("打开 CA 证书文件失败: {}", e))?;
+            let mut ca_reader = BufReader::new(ca_file);
+            let ca_certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut ca_reader)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("解析 CA 证书失败: {}", e))?
+                .into_iter()
+                .map(|cert| CertificateDer::from(cert.into_owned()))
+                .collect();
+
+            if ca_certs.is_empty() {
+                return Err("CA 证书为空".to_string());
+            }
+
+            info!("  ✅ CA 证书已加载 ({} 个证书)", ca_certs.len());
+
+            // 创建 RootCertStore 并添加 CA 证书
+            let mut root_store = RootCertStore::empty();
+            for ca_cert in ca_certs {
+                root_store.add(ca_cert)
+                    .map_err(|e| format!("添加 CA 证书到 RootCertStore 失败: {:?}", e))?;
+            }
+
+            info!("  ✅ RootCertStore 已创建，根证书数量: {}", root_store.len());
+
+            // 创建客户端证书验证器（要求并验证客户端证书）
+            let client_auth = WebPkiClientVerifier::builder(Arc::new(root_store))
+                .build()
+                .map_err(|e| format!("创建客户端证书验证器失败: {:?}", e))?;
+
+            info!("  ✅ 客户端证书验证器已创建");
+
+            ServerConfig::builder()
+                .with_client_cert_verifier(client_auth)
+                .with_cert_resolver(sni_resolver_arc.clone())
+        } else {
+            // 不启用 mTLS（单向认证）
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(sni_resolver_arc.clone())
+        };
 
         // 设置 ALPN 协议，同时支持 HTTP/2 和 HTTP/1.1
         // 这样 TLS 握手能成功完成，然后在应用层检查并拒绝非 HTTP/2
+        let mut server_config = server_config;
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         let server_config = Arc::new(server_config);
