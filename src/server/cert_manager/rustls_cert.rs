@@ -34,7 +34,7 @@ impl RustlsCertManager {
         // 获取 provider（直接使用，不关心是否重复安装）
         let provider = rustls::crypto::ring::default_provider();
 
-        info!("加载证书: {}", cert_config.cert_path.display());
+        println!("加载证书: {}", cert_config.cert_path.display());
 
         // 创建 SNI 解析器
         let mut sni_resolver = ResolvesServerCertUsingSni::new();
@@ -80,7 +80,7 @@ impl RustlsCertManager {
         for domain in &domains {
             sni_resolver.add(domain, certified_key.clone())
                 .map_err(|e| format!("添加证书到 SNI 解析器失败: {:?}", e))?;
-            info!("  ✓ 域名: {}", domain);
+            println!("  ✓ 域名: {}", domain);
         }
 
         // 创建 ServerConfig，ALPN 只支持 h2
@@ -106,7 +106,7 @@ impl RustlsCertManager {
                 return Err("CA 证书为空".to_string());
             }
 
-            info!("  ✅ CA 证书已加载 ({} 个证书)", ca_certs.len());
+            println!("  ✅ CA 证书已加载 ({} 个证书)", ca_certs.len());
 
             // 创建 RootCertStore 并添加 CA 证书
             let mut root_store = RootCertStore::empty();
@@ -115,14 +115,14 @@ impl RustlsCertManager {
                     .map_err(|e| format!("添加 CA 证书到 RootCertStore 失败: {:?}", e))?;
             }
 
-            info!("  ✅ RootCertStore 已创建，根证书数量: {}", root_store.len());
+            println!("  ✅ RootCertStore 已创建，根证书数量: {}", root_store.len());
 
             // 创建客户端证书验证器（要求并验证客户端证书）
             let client_auth = WebPkiClientVerifier::builder(Arc::new(root_store))
                 .build()
                 .map_err(|e| format!("创建客户端证书验证器失败: {:?}", e))?;
 
-            info!("  ✅ 客户端证书验证器已创建");
+            println!("  ✅ 客户端证书验证器已创建");
 
             ServerConfig::builder()
                 .with_client_cert_verifier(client_auth)
@@ -141,7 +141,7 @@ impl RustlsCertManager {
 
         let server_config = Arc::new(server_config);
 
-        info!("证书加载完成，共 {} 个域名", domains.len());
+        println!("证书加载完成，共 {} 个域名", domains.len());
 
         Ok(Self {
             sni_resolver: sni_resolver_arc,
@@ -187,7 +187,7 @@ impl RustlsCertManager {
                     let key_path = path.with_file_name(format!("{}-key.pem", domain));
                     if key_path.exists() {
                         cert_files.insert(domain.clone(), (path.to_string_lossy().to_string(), key_path.to_string_lossy().to_string()));
-                        info!("发现证书: {} -> {}", domain, path.display());
+                        println!("发现证书: {} -> {}", domain, path.display());
                     }
                 }
             }
@@ -200,14 +200,14 @@ impl RustlsCertManager {
         // 获取 provider
         let provider = rustls::crypto::ring::default_provider();
 
-        info!("预加载 SSL 证书...");
+        println!("预加载 SSL 证书...");
 
         // 创建 SNI 解析器
         let mut sni_resolver = ResolvesServerCertUsingSni::new();
         let mut domains = Vec::new();
 
         for (domain, (cert_path, key_path)) in cert_files {
-            info!("  预加载证书: {}", domain);
+            println!("  预加载证书: {}", domain);
 
             // 读取证书
             let cert_pem = std::fs::read(&cert_path)
@@ -244,10 +244,10 @@ impl RustlsCertManager {
                 .map_err(|e| format!("添加证书到 SNI 解析器失败: {:?}", e))?;
 
             domains.push(domain);
-            info!("    ✓ 证书加载成功");
+            println!("    ✓ 证书加载成功");
         }
 
-        info!("SSL 证书预加载完成，共 {} 个证书", domains.len());
+        println!("SSL 证书预加载完成，共 {} 个证书", domains.len());
 
         // 创建 ServerConfig，ALPN 支持 HTTP/2 和 HTTP/1.1
         let sni_resolver_arc = Arc::new(sni_resolver);

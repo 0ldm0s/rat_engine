@@ -363,7 +363,7 @@ async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
     println!("📁 证书目录: {:?}", cert_dir);
 
     // 检查证书文件是否存在
-    let client_cert_path = cert_dir.join("client-cert-chain.pem");  // 完整证书链（包含 CA）
+    let client_cert_path = cert_dir.join("client-cert-full-chain.pem");  // 完整证书链（客户端证书 + CA）
     let client_key_path = cert_dir.join("client-key.pem");
     let ca_cert_path = cert_dir.join("ca-cert.pem");
 
