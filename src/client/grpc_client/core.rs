@@ -65,7 +65,7 @@ pub struct RatGrpcClient {
     pub stream_id_counter: std::sync::atomic::AtomicU64,
     /// 委托模式双向流管理器
     pub delegated_manager: Arc<ClientBidirectionalManager>,
-    /// 是否启用开发模式（跳过证书验证）
+    /// h2c 模式（跳过证书验证，用于通过 HTTP 代理传输）
     pub h2c_mode: bool,
     /// mTLS 客户端配置
     pub mtls_config: Option<MtlsClientConfig>,

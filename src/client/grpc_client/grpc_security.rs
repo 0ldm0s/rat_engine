@@ -34,7 +34,7 @@ impl RatGrpcClient {
 
         if self.h2c_mode {
             warn!("⚠️  警告：gRPC 客户端已启用 h2c-over-TLS 模式，将跳过所有 TLS 证书验证！仅用于通过 HTTP 代理传输！");
-            return self.create_development_config();
+            return self.create_skip_verification_config();
         } else {
             info!("✅ 使用标准 TLS 配置（系统证书）");
             return self.create_standard_config();
@@ -88,8 +88,8 @@ impl RatGrpcClient {
         Ok(Arc::new(config))
     }
 
-    fn create_development_config(&self) -> RatResult<Arc<ClientConfig>> {
-        // h2c-over-TLS 模式：跳过证书验证
+    fn create_skip_verification_config(&self) -> RatResult<Arc<ClientConfig>> {
+        // h2c-over-TLS 模式：跳过证书验证（用于通过 HAProxy 等 HTTP 代理传输）
         let mut config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerification))
@@ -98,11 +98,11 @@ impl RatGrpcClient {
         // h2c-over-TLS 模式：禁用 ALPN，让代理认为是普通 TLS
         if self.h2c_over_tls {
             // 不设置 ALPN
-            info!("✅ 开发模式 TLS 配置完成（h2c-over-TLS 模式：无 ALPN）");
+            info!("✅ h2c代理模式 TLS 配置完成（h2c-over-TLS 模式：无 ALPN）");
         } else {
             // 设置 ALPN 协议，gRPC 强制 HTTP/2
             config.alpn_protocols = vec![b"h2".to_vec()];
-            info!("✅ 开发模式 TLS 配置完成（ALPN: h2）");
+            info!("✅ h2c代理模式 TLS 配置完成（ALPN: h2）");
         }
 
         Ok(Arc::new(config))

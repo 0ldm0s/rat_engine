@@ -96,7 +96,7 @@ pub struct ConnectionPoolConfig {
     pub cleanup_interval: Duration,
     /// 每个目标的最大连接数
     pub max_connections_per_target: usize,
-    /// 开发模式（跳过 TLS 证书验证）
+    /// h2c 模式（跳过 TLS 证书验证，用于通过 HTTP 代理传输）
     pub h2c_mode: bool,
     /// mTLS 客户端配置
     pub mtls_config: Option<MtlsClientConfig>,
@@ -294,7 +294,7 @@ impl ClientConnectionPool {
         let connection_handle;
 
         if is_https {
-            debug!("[客户端] 🔐 建立 TLS 连接到 {}:{} (开发模式: {})", host, port, self.config.h2c_mode);
+            debug!("[客户端] 🔐 建立 TLS 连接到 {}:{} (h2c模式: {})", host, port, self.config.h2c_mode);
 
             // 获取 TLS 配置
             let tls_config = self.config.tls_config.as_ref()
