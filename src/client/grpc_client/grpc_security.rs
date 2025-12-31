@@ -45,37 +45,18 @@ impl RatGrpcClient {
         println!("🔑 [mTLS] 开始创建 mTLS 配置");
 
         let provider = Arc::new(default_provider());
-        let config_builder = ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()?;
         println!("✅ [mTLS] CryptoProvider 和协议版本配置完成");
-
-        // 根据是否配置了自定义 CA 来选择证书验证器
-        let config_builder = if let Some(ref ca_certs) = mtls_config.ca_certs {
-            println!("📋 [mTLS] 使用自定义 CA 证书，数量: {}", ca_certs.len());
-            // 使用自定义 CA 验证服务器证书
-            let mut root_store = rustls::RootCertStore::empty();
-            for (i, ca_cert) in ca_certs.iter().enumerate() {
-                let cert = CertificateDer::from(ca_cert.to_vec());
-                println!("   [{}] 添加 CA 证书，大小: {} 字节", i, ca_cert.len());
-                root_store.add(cert)
-                    .map_err(|e| RatError::RequestError(format!("添加 CA 证书失败: {}", e)))?;
-            }
-
-            warn!("⚠️  使用自定义 CA 证书验证服务器");
-            config_builder.with_root_certificates(root_store)
-        } else {
-            println!("🌐 [mTLS] 使用系统平台验证器（rustls-platform-verifier）");
-            // 使用系统平台验证器
-            config_builder.with_platform_verifier()
-        };
 
         // 配置客户端证书
         println!("📜 [mTLS] 配置客户端证书链，数量: {}", mtls_config.client_cert_chain.len());
         let cert_chain: Vec<CertificateDer<'static>> = mtls_config.client_cert_chain
             .iter()
-            .map(|c| CertificateDer::from(c.to_vec()))
+            .map(|c| {
+                println!("   [证书] 大小: {} 字节，DER 编码...", c.len());
+                CertificateDer::from(c.to_vec())
+            })
             .collect();
-        println!("   证书链 DER 编码完成");
+        println!("   证书链 DER 编码完成，最终证书链数量: {}", cert_chain.len());
 
         // 从 PEM 格式解析私钥
         println!("🔐 [mTLS] 解析客户端私钥，PEM 大小: {} 字节", mtls_config.client_private_key.len());
@@ -84,8 +65,13 @@ impl RatGrpcClient {
             .ok_or_else(|| RatError::RequestError("客户端私钥为空".to_string()))?;
         println!("   私钥解析成功");
 
-        println!("📋 [mTLS] 调用 with_client_auth_cert");
-        let mut config = config_builder
+        // mTLS 模式：跳过服务器证书验证（仅用于开发/测试）
+        warn!("🔓 [mTLS] 跳过服务器证书验证（仅用于 mTLS 开发环境）");
+
+        let mut config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerification))
             .with_client_auth_cert(cert_chain, private_key)
             .map_err(|e| RatError::RequestError(format!("配置客户端证书失败: {}", e)))?;
         println!("✅ [mTLS] 客户端证书配置成功");

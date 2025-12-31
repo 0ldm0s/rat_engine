@@ -12,6 +12,7 @@ use std::sync::Arc;
 use rustls::server::{ServerConfig, ResolvesServerCertUsingSni, WebPkiClientVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
+use rustls::crypto::CryptoProvider;
 use rustls_pemfile::{certs, private_key};
 use rustls::RootCertStore;
 
@@ -117,18 +118,19 @@ impl RustlsCertManager {
 
             println!("  ✅ RootCertStore 已创建，根证书数量: {}", root_store.len());
 
-            // 创建客户端证书验证器（要求并验证客户端证书）
-            let client_auth = WebPkiClientVerifier::builder(Arc::new(root_store))
+            // 创建客户端证书验证器（使用 CA 证书验证客户端证书）
+            let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
                 .build()
                 .map_err(|e| format!("创建客户端证书验证器失败: {:?}", e))?;
 
             println!("  ✅ 客户端证书验证器已创建");
 
             ServerConfig::builder()
-                .with_client_cert_verifier(client_auth)
+                .with_client_cert_verifier(client_verifier)
                 .with_cert_resolver(sni_resolver_arc.clone())
         } else {
             // 不启用 mTLS（单向认证）
+            println!("🌐 [服务器] 不启用 mTLS（单向认证）");
             ServerConfig::builder()
                 .with_no_client_auth()
                 .with_cert_resolver(sni_resolver_arc.clone())
