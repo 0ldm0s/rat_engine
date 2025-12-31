@@ -316,7 +316,7 @@ async fn start_mtls_test_server() -> Result<(), Box<dyn std::error::Error + Send
     }
 
     // 创建 mTLS 证书管理器配置
-    // 使用实际签发的服务器证书 + CA 验证客户端
+    // 使用 CA 证书验证客户端证书链
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     let server_cert_config = CertConfig::from_paths(
@@ -324,7 +324,7 @@ async fn start_mtls_test_server() -> Result<(), Box<dyn std::error::Error + Send
         manifest_dir.join("examples/certs/ligproxy-test.0ldm0s.net-key.pem"),
     )
     .with_domains(vec!["ligproxy-test.0ldm0s.net".to_string()])
-    .with_ca(manifest_dir.join("examples/certs/mtls/ca-cert.pem")); // ← 启用 mTLS
+    .with_ca(manifest_dir.join("examples/certs/mtls/ca-cert.pem")); // ← CA 证书验证客户端
 
     let cert_manager_config = CertManagerConfig::shared(server_cert_config);
 
@@ -363,7 +363,7 @@ async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
     println!("📁 证书目录: {:?}", cert_dir);
 
     // 检查证书文件是否存在
-    let client_cert_path = cert_dir.join("client-cert-full-chain.pem");  // 完整证书链（客户端证书 + CA）
+    let client_cert_path = cert_dir.join("client-cert-chain.pem");  // 完整证书链（客户端证书 + CA）
     let client_key_path = cert_dir.join("client-key.pem");
     let ca_cert_path = cert_dir.join("ca-cert.pem");
 
@@ -384,6 +384,7 @@ async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ 所有证书文件检查通过");
 
     // 使用 mTLS 客户端证书进行双向认证
+    // 注意：CA 证书传 None，mTLS 模式下会自动跳过服务器证书验证（开发环境）
     println!("🔐 [客户端] 开始创建带 mTLS 证书的 gRPC 客户端");
     let mut client = RatGrpcClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))?
@@ -395,7 +396,7 @@ async fn run_mtls_delegated_mode() -> Result<(), Box<dyn std::error::Error>> {
         .with_client_certs_and_ca(
             client_cert_path.to_string_lossy().to_string(),
             client_key_path.to_string_lossy().to_string(),
-            Some(ca_cert_path.to_string_lossy().to_string())  // 提供服务器 CA 证书
+            None  // mTLS 模式下跳过服务器证书验证
         )?
         .build()?;
     println!("✅ gRPC 客户端创建成功");
