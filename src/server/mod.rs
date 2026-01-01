@@ -675,12 +675,12 @@ async fn route_by_detected_protocol(
                 let reconstructed_stream = ReconstructedStream::new(stream, buffer);
                 handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
             } else {
-                // 单端口多协议模式 - 使用新的多协议适配器
-                info!("🔀 [服务端] 单端口多协议模式，使用多协议适配器: {}", remote_addr);
-                let cert_manager = tls_cert_manager
-                    .unwrap_or_else(|| panic!("单端口多协议模式必须配置 TLS 证书"));
+                // 单端口多协议模式 - 转发到 HTTP 服务器处理
+                // http_server 使用 hyper auto builder，支持 HTTP/1.1 和 HTTP/2
+                // 能正确处理 SSE 流式响应
+                info!("🌐 [服务端] 单端口多协议模式，路由到 HTTP 处理器: {}", remote_addr);
                 let reconstructed_stream = ReconstructedStream::new(stream, buffer);
-                crate::server::multi_protocol_adapter::handle_multi_protocol_tls_connection(reconstructed_stream, remote_addr, router, adapter, cert_manager).await
+                handle_tls_connection(reconstructed_stream, remote_addr, router, adapter, tls_cert_manager.clone()).await
             }
         }
         ProtocolType::HTTP2 => {
