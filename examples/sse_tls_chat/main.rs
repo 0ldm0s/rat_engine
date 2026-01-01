@@ -148,8 +148,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // 创建路由器
     let mut router = Router::new();
+    router.enable_http_only();  // 启用 HTTP 专用模式，确保 SSE 正常工作
 
-    // 不启用任何专用模式，单端口同时支持 HTTP 和 SSE
+    // 单端口同时支持 HTTP 和 SSE
 
     // 注册主页路由 - 登录页面
     router.add_route(

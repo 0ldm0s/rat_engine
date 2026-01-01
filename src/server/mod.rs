@@ -578,11 +578,22 @@ pub async fn detect_and_handle_protocol_with_tls(
     let safe_preview: String = data_str.chars().take(100).collect();
     println!("🔍 [服务端] 协议检测数据 (前100字符): {:?}", safe_preview);
 
-    // 情况1: HTTP 专用模式 - 直接走 HTTP 处理
+    // 情况1: HTTP 专用模式 - 支持 HTTP 和 HTTPS（自动升级到 TLS）
     if router.is_http_only() {
-        println!("✅ [服务端] HTTP 专用模式，直接路由到 HTTP 处理器");
-        route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
-        return Ok(());
+        // 检测是否为 TLS 连接
+        let is_tls = detection_data.len() > 0 && detection_data[0] == 0x16;
+
+        if is_tls && tls_cert_manager.is_some() {
+            // HTTP 专用模式 + TLS 连接 + 有证书 → 使用 HTTPS
+            println!("✅ [服务端] HTTP 专用模式，检测到 TLS 连接，使用 HTTPS");
+            route_by_detected_protocol(stream, detection_data, ProtocolType::TLS, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+            return Ok(());
+        } else {
+            // HTTP 专用模式 + 明文连接 → 使用 HTTP
+            println!("✅ [服务端] HTTP 专用模式，使用 HTTP 处理器");
+            route_by_detected_protocol(stream, detection_data, ProtocolType::HTTP1_1, actual_remote_addr, router, adapter, tls_cert_manager.clone()).await;
+            return Ok(());
+        }
     }
 
     // 情况2: gRPC 专用模式 - 直接走 gRPC 处理（需要 TLS）
